@@ -1,0 +1,7 @@
+out/
+*.class
+wawa-save.properties
+
+# The original APK's assets are not redistributed; point the tools at your own extraction.
+assets/
+extract/
