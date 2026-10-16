@@ -593,6 +593,10 @@ final class GameCore {
 		int nx = heroX + dx;
 		int ny = heroY + dy;
 		if (!map.inBounds(nx, ny)) {
+			// MoveHeroPath turns first and checks the current cell even when the move is blocked, so
+			// pushing against the map edge from inside a portal still takes it.
+			heroDir = dy < 0 ? 0 : dy > 0 ? 1 : dx < 0 ? 2 : 3;
+			takeExit();
 			return;
 		}
 		if (monsterAt(nx, ny) != null) {
@@ -602,6 +606,69 @@ final class GameCore {
 		heroDir = dy < 0 ? 0 : dy > 0 ? 1 : dx < 0 ? 2 : 3;
 		heroX = nx;
 		heroY = ny;
+		takeExit();
+	}
+
+	/**
+	 * MoveHeroPath on an exit cell: walking into a portal while facing out of the map (the
+	 * portal's facing ^ 1) runs the map's exit event for it, or else moves the map as
+	 * MoveGameMap(i, 1) does.
+	 */
+	private void takeExit() {
+		List<AreaInfo.Portal> exits = area.portals;
+		for (int i = 0; i < exits.size(); i++) {
+			AreaInfo.Portal p = exits.get(i);
+			if (p.contains(heroX, heroY) && heroDir == (p.dir() ^ 1)) {
+				if (!events.searchMapMove(i)) {
+					moveGameMap(p);
+				}
+				return;
+			}
+		}
+	}
+
+	/**
+	 * MoveGameMap(i, 1): the destination's portal receives the hero at the same relative spot,
+	 * scaled to its size, facing into the new map; then the new map's events start.
+	 */
+	private void moveGameMap(AreaInfo.Portal from) {
+		String mob = "assets/eng/mob/" + from.dest().charAt(0) + ".png";
+		try {
+			// A header high nibble of 3 or more marks a boss/regen map, which MoveGameMap enters only
+			// through GMenu 0x74; this port has no such menu, so the hero stays.
+			if (AreaInfo.load(assets, mob, from.dest()).ambience >> 4 >= 3) {
+				notPorted("GMenu 0x74 (" + from.dest() + ")");
+				return;
+			}
+		} catch (IOException e) {
+			// No area file: not a gated map.
+		}
+		int rx = heroX - from.x0();
+		int ry = heroY - from.y0();
+		int w = from.x1() - from.x0();
+		int h = from.y1() - from.y0();
+		try {
+			loadMap(from.dest());
+		} catch (IOException e) {
+			log = "맵 로드 실패: " + e;
+			return;
+		}
+		if (from.destIndex() < area.portals.size()) {
+			AreaInfo.Portal to = area.portals.get(from.destIndex());
+			int tw = to.x1() - to.x0();
+			int th = to.y1() - to.y0();
+			heroX = to.x0() + (rx * tw + (tw >> 1)) / w;
+			heroY = to.y0() + (ry * th + (th >> 1)) / h;
+			heroDir = to.dir();
+		}
+		enterEvents();
+	}
+
+	private void notPorted(String what) {
+		log = "[미포팅] " + what;
+		if (notPortedSeen.add(what)) {
+			System.out.println("[미포팅] " + what);
+		}
 	}
 
 	/** One step per frame towards the target cell, so movement reads as walking. */
@@ -1656,6 +1723,13 @@ final class GameCore {
 			events.loadMap(EventScript.map(assets, mapCode));
 		}
 
+		@Override
+		public void mapExit(int exit) {
+			if (exit < area.portals.size()) {
+				moveGameMap(area.portals.get(exit));
+			}
+		}
+
 		/**
 		 * 45 k (fp m_0x291e8 359-438). 00/03 darken from 1/8 over 8 frames, 01/04 lighten from 7/8
 		 * over 6 (from opaque over 8 when fully covered), black or white; 02/05 cover at once. In
@@ -1865,10 +1939,7 @@ final class GameCore {
 
 		@Override
 		public void notPorted(String what) {
-			log = "[미포팅] " + what;
-			if (notPortedSeen.add(what)) {
-				System.out.println("[미포팅] " + what);
-			}
+			GameCore.this.notPorted(what);
 		}
 	}
 
@@ -2222,6 +2293,21 @@ final class GameCore {
 		writeFrame(sink, "intro-end.png");
 		System.out.println("intro frames=" + tick + " running=" + events.active() + " map=" + mapCode
 				+ " hero=" + heroX + "," + heroY + " var1=" + events.vars.get(1) + " notPorted=" + notPortedSeen);
+		// Walk west into t01's exit (column 0, rows 3..22): MoveGameMap puts the hero on t02's
+		// portal 0 at the east edge, same row, facing west; then t02's events run to the end.
+		for (int i = 0; i < 15 && "t01".equals(mapCode); i++) {
+			key(Keys.LEFT);
+		}
+		int moveTicks = 0;
+		while (events.active() && moveTicks < 8000) {
+			gameTick();
+			if (++moveTicks % 12 == 0) {
+				key(Keys.ENTER);
+			}
+		}
+		writeFrame(sink, "mapmove.png");
+		System.out.println("mapmove map=" + mapCode + " hero=" + heroX + "," + heroY + " dir=" + heroDir
+				+ " frames=" + moveTicks + " running=" + events.active());
 		loadMap(MAP_CODES[0]);
 		int[] keys = {
 			Keys.RIGHT, Keys.RIGHT, Keys.DOWN, Keys.DOWN, Keys.RIGHT, Keys.RIGHT, Keys.RIGHT

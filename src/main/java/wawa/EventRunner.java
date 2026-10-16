@@ -101,6 +101,9 @@ final class EventRunner {
 		/** LoadGameMap(name, 2) after a phase that moved the map: the new map's events load. */
 		void reloadEvents();
 
+		/** ExitPhase after a map-exit event: MoveGameMap(exit, 1) through the current map's portal. */
+		void mapExit(int exit);
+
 		/** 45: fade/colour step k; returns the frames the phase waits for it. */
 		int fade(int k, int mode);
 
@@ -356,7 +359,7 @@ final class EventRunner {
 		if (e.type == LOCAL && t == 2 && r == 1 && stack.isEmpty() && !reloadAfter) {
 			initPhaseZero();
 			// ExitPhase always reads the exit at +1, even for shared headers.
-			w.notPorted("맵 출구 이동(" + (e.t.d[e.t.offs[e.idx] + 1] & 0xff) + ")");
+			w.mapExit(e.t.d[e.t.offs[e.idx] + 1] & 0xff);
 			return;
 		}
 		if (!stack.isEmpty()) {
