@@ -35,6 +35,58 @@ public final class Game extends JFrame {
 	private static final int CELL = 20;
 	private static final int MAP_X = 8;
 	private static final int MAP_Y = 26;
+	/** Where and how big the canvas last landed in the window, for mapping clicks back. */
+	private double viewScale = 1;
+	private int viewX;
+	private int viewY;
+
+	/**
+	 * Input methods need somewhere to anchor their composition window; giving them one makes them
+	 * deliver Hangul as committed text (the listener in the constructor) on desktop and in CheerpJ.
+	 */
+	@Override
+	public java.awt.im.InputMethodRequests getInputMethodRequests() {
+		return new java.awt.im.InputMethodRequests() {
+			@Override
+			public java.awt.Rectangle getTextLocation(java.awt.font.TextHitInfo offset) {
+				java.awt.Point p = getLocationOnScreen();
+				return new java.awt.Rectangle(p.x + getWidth() / 2, p.y + getHeight() / 2, 0, 16);
+			}
+
+			@Override
+			public java.awt.font.TextHitInfo getLocationOffset(int x, int y) {
+				return null;
+			}
+
+			@Override
+			public int getInsertPositionOffset() {
+				return 0;
+			}
+
+			@Override
+			public java.text.AttributedCharacterIterator getCommittedText(int begin, int end,
+					java.text.AttributedCharacterIterator.Attribute[] attributes) {
+				return new java.text.AttributedString("").getIterator();
+			}
+
+			@Override
+			public int getCommittedTextLength() {
+				return 0;
+			}
+
+			@Override
+			public java.text.AttributedCharacterIterator cancelLatestCommittedText(
+					java.text.AttributedCharacterIterator.Attribute[] attributes) {
+				return null;
+			}
+
+			@Override
+			public java.text.AttributedCharacterIterator getSelectedText(
+					java.text.AttributedCharacterIterator.Attribute[] attributes) {
+				return new java.text.AttributedString("").getIterator();
+			}
+		};
+	}
 
 	private final ElfImage so;
 	private final SlotScreen slotScreen;
@@ -55,6 +107,9 @@ public final class Game extends JFrame {
 	private static final int TILE = 16;
 	private static final int VIEW_W = 20;
 	private static final int VIEW_H = 12;
+	/** The fixed canvas the game draws on; the window scales it to fit. */
+	private static final int BASE_W = VIEW_W * CELL + 16;
+	private static final int BASE_H = MAP_Y + VIEW_H * CELL + 46;
 
 	/** All map codes the game ships, in the order the map files use. */
 	private static final String[] MAP_CODES = {
@@ -73,24 +128,62 @@ public final class Game extends JFrame {
 	private TalkBox talk;
 	private EventRunner events;
 	private Gsac imoticon;
-	/** Opcode 45's screen fade: 0 clear .. 8 full, the step per frame, and white or black. */
-	private int fade;
-	private int fadeStep;
+	/**
+	 * DrawFade's value (wawamain+0x2ec0): 1..7 darken by v/8, 8 and up cover the view, negative
+	 * values lighten from |v|/8; every drawn frame adds one while v is below 8. Black or white.
+	 */
+	private int fadeV;
 	private boolean fadeWhite;
-	/** AddSwing frames left. */
-	private int shake;
-	/** A script camera: the cell the view centres on, or a unit it follows; null follows the hero. */
-	private int[] camCentre;
+	/** 45 0b/0c: terrain-only darkening in 1/8 steps (+0x2ec8) and its direction (+0x2ecc, 1 up to 4, 0 down). */
+	private int dim;
+	private int dimUp;
+	/** 45 06..08: game speed (+0x2ed8, negative = g_anSpeedSlowest) and its frame count (+0x2ee0). */
+	private int speed;
+	private int speedFrames;
+	/** 45 09/0a: the world freeze byte (+0x3e6); the hero and units neither move nor animate. */
+	private boolean frozen;
+	/** AddSwing / CalcSwing: pattern (+0x5a74), countdown (+0x5a78) and this frame's camera offset in px. */
+	private int swingPat;
+	private int swingCnt = -1;
+	private int swingX;
+	private int swingY;
+	/** g_aptSwing: {s8 dx, s8 dy} for pattern n (1..10) and countdown 3..0. */
+	private static final int SWING = 0xba76c;
+	/**
+	 * CalcCamera: the view origin in world px (16 per tile) and the follow mode DAT_01408a22:
+	 * -1 the port's free-play camera (centred on the hero at once), 0xff stopped, 0/1 the hero
+	 * leading/centred, 2/4 a unit leading/centred, 3 a point. camScrolling is map+0x13d4, which
+	 * holds result 5 while the view still moves.
+	 */
+	private int camX;
+	private int camY;
+	private int camMode = -1;
+	private int camPX;
+	private int camPY;
 	private Monster camUnit;
-	private boolean heroHidden;
-	/** A scripted hero walk (83): target cell, arrival direction (8 keeps), frames to the next step. */
+	private boolean camScrolling;
+	/** Hero +0x1d: fade step like units' +0x42, -3..-1 fading in, 1..3 fading out, 4 and up unseen. */
+	private int heroFade;
+	/**
+	 * Hero +7 act, +0x1b step, +0x1c frames the step has been held, +0x45 cycles left (b3's p as
+	 * s8) and +0x44 bit 8, set while a b3 action plays.
+	 */
+	private int heroAct;
+	private int heroStep;
+	private int heroHeld;
+	private int heroActLeft;
+	private boolean heroActRun;
+	/** Px moved into the next cell (CollHeroPath: 8 a frame straight, 6 diagonal). */
+	private int heroPx;
+	/** A scripted hero walk (83, e3): target cell and the arrival direction fixed at command time. */
 	private int heroGoX = -1;
 	private int heroGoY;
 	private int heroGoDir;
-	private int heroGoWait;
 	/** AddImoticon entries: target (null = hero), kind, frames drawn. */
 	private final List<Emote> emotes = new ArrayList<>();
 	private int frames;
+	/** The CalcGamePlay timer; its delay is wawamain+0x20 (g_anSpeed[5] = 62 ms, Slowest 83 ms). */
+	private javax.swing.Timer loop;
 	/**
 	 * The hero record's integers from +0xa4 that scripts read and write (kind 4) and this port has
 	 * no field for; level (2) and HP (3) map onto {@link Hero}. Saved with the slot like the record.
@@ -100,12 +193,14 @@ public final class Game extends JFrame {
 	private HeroAnim heroAnim;
 	/**
 	 * The hero record's direction byte (+5), numbered like units (CollMonsPath): 0 up, 1 down,
-	 * 2 left, 3 right (ani_hero draws 3 as 2 mirrored), 4..7 diagonals. The t01 script walks the hero
-	 * left with arrival direction 2 ({@code 83 0b 0f 02}), which fixes 2 as left.
+	 * 2 left, 3 right, 4..7 diagonals; kept 0..7 and drawn by HeroAnim's row rules. The t01 script
+	 * walks the hero left with arrival direction 2 ({@code 83 0b 0f 02}), which fixes 2 as left.
+	 * InitHero faces a new hero right (3).
 	 */
-	private int heroDir = 1;
+	private int heroDir = 3;
+	/** g_aDirX / g_aDirY (0xb9848 / 0xb9854) per direction; 8 is no offset. */
 	private static final int[][] DIR_STEP = {
-		{ 0, -1 }, { 0, 1 }, { -1, 0 }, { 1, 0 }, { 1, -1 }, { -1, 1 }, { -1, -1 }, { 1, 1 }
+		{ 0, -1 }, { 0, 1 }, { -1, 0 }, { 1, 0 }, { 1, -1 }, { -1, 1 }, { -1, -1 }, { 1, 1 }, { 0, 0 }
 	};
 	private int gold = 300;
 	private int potions = 3;
@@ -139,15 +234,56 @@ public final class Game extends JFrame {
 		opening = new TitleScreen(assets);
 
 		setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE);
-		setResizable(false);
-		setContentPane(new javax.swing.JPanel() {
+		// The game draws on a fixed BASE_W x BASE_H canvas; the window scales it to whatever size it
+		// has, keeping the aspect, so any screen (and the browser page) shows all of it.
+		javax.swing.JPanel canvas = new javax.swing.JPanel() {
 			@Override
 			protected void paintComponent(java.awt.Graphics g) {
 				super.paintComponent(g);
-				draw((Graphics2D) g);
+				BufferedImage frame = new BufferedImage(BASE_W, BASE_H, BufferedImage.TYPE_INT_RGB);
+				Graphics2D fg = frame.createGraphics();
+				draw(fg);
+				fg.dispose();
+				viewScale = Math.min(getWidth() / (double) BASE_W, getHeight() / (double) BASE_H);
+				int w = (int) (BASE_W * viewScale);
+				int h = (int) (BASE_H * viewScale);
+				viewX = (getWidth() - w) / 2;
+				viewY = (getHeight() - h) / 2;
+				g.setColor(Color.BLACK);
+				g.fillRect(0, 0, getWidth(), getHeight());
+				((Graphics2D) g).setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+						RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+				g.drawImage(frame, viewX, viewY, w, h, null);
+			}
+		};
+		canvas.setPreferredSize(new java.awt.Dimension(BASE_W, BASE_H));
+		setContentPane(canvas);
+		if (System.getProperty("wawa.web") != null) {
+			// In the browser the "screen" is the page's display area: fill it without a title bar.
+			setUndecorated(true);
+			setExtendedState(MAXIMIZED_BOTH);
+		}
+		pack();
+		// Hangul arrives from an input method as committed text, not as KEY_TYPED events.
+		enableInputMethods(true);
+		addInputMethodListener(new java.awt.event.InputMethodListener() {
+			@Override
+			public void inputMethodTextChanged(java.awt.event.InputMethodEvent e) {
+				java.text.AttributedCharacterIterator text = e.getText();
+				if (selecting && text != null) {
+					int n = e.getCommittedCharacterCount();
+					for (char c = text.first(); n-- > 0 && c != java.text.CharacterIterator.DONE; c = text.next()) {
+						slotScreen.typed(c);
+					}
+					repaint();
+				}
+				e.consume();
+			}
+
+			@Override
+			public void caretPositionChanged(java.awt.event.InputMethodEvent e) {
 			}
 		});
-		setSize(VIEW_W * CELL + 16, MAP_Y + VIEW_H * CELL + 46);
 		addKeyListener(new KeyAdapter() {
 			@Override
 			public void keyPressed(KeyEvent e) {
@@ -173,9 +309,9 @@ public final class Game extends JFrame {
 
 		// CalcGamePlay runs on the native 62 ms timer with this order:
 		// InitHeroState -> CalcHeroAct -> CalcMons -> CalcHeroRun -> Post*Value -> phase pop.
-		javax.swing.Timer loop = new javax.swing.Timer(62, e -> {
+		loop = new javax.swing.Timer(62, e -> {
 			if (!selecting) {
-				playMillis += 62;
+				playMillis += loop.getDelay();
 				gameTick();
 			}
 			repaint();
@@ -188,6 +324,7 @@ public final class Game extends JFrame {
 		hero = new Hero(so, heroClass);
 		hero.name = name;
 		hero.weapon = items.create(STARTING_WEAPON, 0, rng);
+		heroDir = 3;
 		heroInts = new int[0x100];
 		hero.recompute(rng);
 		hero.hp = hero.maxHp;
@@ -276,10 +413,14 @@ public final class Game extends JFrame {
 		heroY = map.height / 2;
 		monsters.clear();
 		spawnMonsters();
-		camCentre = null;
+		camMode = -1;
 		camUnit = null;
-		heroHidden = false;
+		camScrolling = false;
+		// FuncMoveMap: hero +0x1d = 0.
+		heroFade = 0;
 		heroGoX = -1;
+		changeHeroAct(HeroAnim.ACT_STAND);
+		heroActRun = false;
 		emotes.clear();
 		log = area.name + " (" + map.width + "x" + map.height + ") 진입.";
 	}
@@ -300,24 +441,35 @@ public final class Game extends JFrame {
 	/** One CalcGamePlay tick in the original order. */
 	private void gameTick() {
 		frames++;
+		drawnFrame();
 		tickEffects();
+		calcCamera();
 		if (events.active()) {
 			// CalcGamePlay keeps moving the hero and units while a phase runs; monsters stand still
 			// (SetPhaseHeroStop sets their 0x2000 bit) and the player's input goes to the phase.
 			scriptMoves();
 			events.calcPhase();
 			events.frame();
-			return;
-		}
-		initHeroState();
-		monsterTick();
-		calcHeroRun();
-		postValues();
-		for (Monster m : monsters) {
-			if (m.atkOnce && (m.x != heroX || m.y != heroY)) {
-				m.atkOnce = false;
+		} else {
+			// No phase: the freeze lifts, and this port's hero has no act of its own.
+			frozen = false;
+			heroGoX = -1;
+			heroActRun = false;
+			if (heroAct != HeroAnim.ACT_STAND) {
+				changeHeroAct(HeroAnim.ACT_STAND);
+			}
+			events.frame();
+			initHeroState();
+			monsterTick();
+			calcHeroRun();
+			postValues();
+			for (Monster m : monsters) {
+				if (m.atkOnce && (m.x != heroX || m.y != heroY)) {
+					m.atkOnce = false;
+				}
 			}
 		}
+		drawSetup();
 	}
 
 	/** InitHeroState: the original recomputes the hero's derived stats every tick. */
@@ -544,8 +696,11 @@ public final class Game extends JFrame {
 	}
 
 	private void onClick(MouseEvent e) {
-		int gx = (e.getX() - MAP_X) / (CELL * SCALE);
-		int gy = (e.getY() - MAP_Y) / (CELL * SCALE);
+		// Window pixel -> canvas pixel -> world pixel (the camera is in 16 px tile units) -> cell.
+		double cx = (e.getX() - getInsets().left - viewX) / viewScale - MAP_X;
+		double cy = (e.getY() - getInsets().top - viewY) / viewScale - MAP_Y;
+		int gx = (camX + (int) (cx * TILE / CELL)) / TILE;
+		int gy = (camY + (int) (cy * TILE / CELL)) / TILE;
 		if (!map.inBounds(gx, gy)) {
 			return;
 		}
@@ -654,12 +809,12 @@ public final class Game extends JFrame {
 			int w = VIEW_W * CELL + 16;
 			int h = w * SlotScreen.H / SlotScreen.W;
 			g.setColor(Color.BLACK);
-			g.fillRect(0, 0, getWidth(), getHeight());
+			g.fillRect(0, 0, BASE_W, BASE_H);
 			g.drawImage(opening != null ? opening.render() : slotScreen.render(), 0, 0, w, h, null);
 			return;
 		}
 		g.setColor(new Color(10, 10, 14));
-		g.fillRect(0, 0, getWidth(), getHeight());
+		g.fillRect(0, 0, BASE_W, BASE_H);
 
 		drawTiles(g);
 
@@ -682,7 +837,7 @@ public final class Game extends JFrame {
 		g.drawString("[방향키] 이동  [Enter] 대화  [클릭] 이동/전투  [1] 공격  [2] 물약  [F5] 저장  [F9] 불러오기"
 				+ "  [3~` ] 12개 지형 전환  [ESC] 종료",
 				MAP_X, foot + 30);
-		if (events.active()) {
+		if (events.overlay()) {
 			// DrawPhase works on the original 480x320 screen; fit it to the window like the slot screen.
 			BufferedImage overlay = new BufferedImage(TalkBox.W, TalkBox.H, BufferedImage.TYPE_INT_ARGB);
 			Graphics2D og = overlay.createGraphics();
@@ -696,68 +851,185 @@ public final class Game extends JFrame {
 		}
 	}
 
-	/** The view origin in cells: a script camera or unit, else centred on the hero. */
-	private int[] camera() {
-		int cx = heroX;
-		int cy = heroY;
-		if (camUnit != null && monsters.contains(camUnit)) {
-			cx = camUnit.x;
-			cy = camUnit.y;
-		} else if (camCentre != null) {
-			cx = camCentre[0];
-			cy = camCentre[1];
-		}
-		return new int[] {
-			Math.max(0, Math.min(map.width - VIEW_W, cx - VIEW_W / 2)),
-			Math.max(0, Math.min(map.height - VIEW_H, cy - VIEW_H / 2))
-		};
+	/** The view in world px, and InitZoomLCD's dead zone for it: e10 / e14 across, e12 / e16 down. */
+	private static final int VIEW_PX_W = VIEW_W * TILE;
+	private static final int VIEW_PX_H = VIEW_H * TILE;
+	private static final int ZONE_L = (VIEW_PX_W - 80) / 2;
+	private static final int ZONE_R = ZONE_L + 80;
+	private static final int ZONE_T = (VIEW_PX_H - 76) / 2;
+	private static final int ZONE_B = ZONE_T + 76;
+
+	/** CalcCameraOnce(px, py, m): (px, py) goes at once where direction m leads it (8 = centre). */
+	private void cameraOnce(int px, int py, int m) {
+		camY = clampCam(py - (m == 0 ? ZONE_B : m == 1 ? ZONE_T : VIEW_PX_H / 2), map.height * TILE - VIEW_PX_H);
+		camX = clampCam(px - (m == 2 ? ZONE_R : m == 3 ? ZONE_L : VIEW_PX_W / 2), map.width * TILE - VIEW_PX_W);
 	}
 
-	/** A sprite whose anchor goes on a cell centre, at the view scale. */
-	private static void drawPose(Graphics2D g, PartSprites.Pose pose, int cx, int cy) {
+	private static int clampCam(int v, int max) {
+		return Math.max(0, Math.min(max, v));
+	}
+
+	/** CalcCamera's hero target: its position 20 px up. */
+	private int[] heroTarget() {
+		return new int[] { heroX * TILE + TILE / 2, heroY * TILE + TILE / 2 - 20 };
+	}
+
+	/** A unit's target: its position lifted by its kind's height (DAT_01419794, taken as DrawImoticon's 0xc08d4). */
+	private int[] unitTarget(Monster m) {
+		return new int[] { m.x * TILE + TILE / 2, m.y * TILE + TILE / 2 - unitHeight(m) };
+	}
+
+	private int unitHeight(Monster m) {
+		return monsterSprites == null ? 0 : so.u8(UNIT_HEIGHT + monsterSprites.kind(m.variant));
+	}
+
+	/**
+	 * CalcCamera: every frame the view moves toward its target by 2 px per started 8 px of offset
+	 * past the screen point (or out of the dead zone for a leading direction), at most 32 px, kept
+	 * on the map. The speed is taken to restart from 0 each frame [inferred: the traced formula
+	 * diverges if it carries over]. Lead direction 9 (DAT_0140422d == 0) is not traced; the
+	 * hero's own direction stands in.
+	 */
+	private void calcCamera() {
+		int[] t;
+		int lead = 8;
+		switch (camMode) {
+			case -1 -> {
+				int[] h = heroTarget();
+				cameraOnce(h[0], h[1], 8);
+				camScrolling = false;
+				return;
+			}
+			case 0, 1 -> {
+				t = heroTarget();
+				lead = camMode == 0 ? heroDir : 8;
+			}
+			case 2, 4 -> {
+				if (!monsters.contains(camUnit)) {
+					camScrolling = false;
+					return;
+				}
+				t = unitTarget(camUnit);
+				lead = camMode == 2 ? camUnit.dir & 3 : 8;
+			}
+			case 3 -> t = new int[] { camPX, camPY };
+			default -> {
+				camScrolling = false;
+				return;
+			}
+		}
+		int vx = lead == 8 ? pull(t[0] - camX, VIEW_PX_W / 2, VIEW_PX_W / 2)
+				: lead == 2 ? pull(t[0] - camX, ZONE_R, ZONE_R) : lead == 3 ? pull(t[0] - camX, ZONE_L, ZONE_L)
+				: pull(t[0] - camX, ZONE_L, ZONE_R);
+		int vy = lead == 8 ? pull(t[1] - camY, VIEW_PX_H / 2, VIEW_PX_H / 2)
+				: lead == 0 ? pull(t[1] - camY, ZONE_B, ZONE_B) : lead == 1 ? pull(t[1] - camY, ZONE_T, ZONE_T)
+				: pull(t[1] - camY, ZONE_T, ZONE_B);
+		int nx = clampCam(camX + Math.max(-32, Math.min(32, vx)), map.width * TILE - VIEW_PX_W);
+		int ny = clampCam(camY + Math.max(-32, Math.min(32, vy)), map.height * TILE - VIEW_PX_H);
+		camScrolling = nx != camX || ny != camY;
+		camX = nx;
+		camY = ny;
+	}
+
+	/** One CalcCamera axis: the speed for screen offset p to reach [lo, hi] (a single point allows 1 px). */
+	private static int pull(int p, int lo, int hi) {
+		int slack = lo == hi ? 1 : 0;
+		if (p > hi + slack) {
+			return 2 * ((p - hi + 7) >> 3);
+		}
+		if (p < lo - slack) {
+			return -2 * ((lo - p + 7) >> 3);
+		}
+		return 0;
+	}
+
+	/**
+	 * A sprite whose anchor goes on a cell centre, at the view scale. A fade step (hero +0x1d,
+	 * unit +0x42) of 1..3 blends it; DrawSpriteFull's alphas are not recovered, 1 - |f| / 4 stands in.
+	 */
+	private static void drawPose(Graphics2D g, PartSprites.Pose pose, int cx, int cy, int fade) {
+		java.awt.Composite old = g.getComposite();
+		if (fade != 0) {
+			g.setComposite(java.awt.AlphaComposite.getInstance(java.awt.AlphaComposite.SRC_OVER,
+					1 - Math.min(3, Math.abs(fade)) / 4f));
+		}
 		BufferedImage spr = pose.image();
 		g.drawImage(spr, cx - pose.anchorX() * CELL / TILE, cy - pose.anchorY() * CELL / TILE,
 				Math.max(1, spr.getWidth() * CELL / TILE), Math.max(1, spr.getHeight() * CELL / TILE), null);
+		g.setComposite(old);
 	}
 
-	/** Draws the tile grid with the camera, using the DrawTile cell rule, then units and the hero. */
+	/** DrawFillAlpha's level l of 8 as an alpha byte; 8 and up is opaque. */
+	private static int alpha8(int l) {
+		return Math.min(255, l * 32);
+	}
+
+	private HeroAnim.Look heroLook() {
+		return HeroAnim.wearing(items, hero.weapon, heroDir, heroAct);
+	}
+
+	/** The ani step a unit draws: its own step, counted back from the last for a reversed entry. */
+	private int unitStep(Monster m) {
+		if (!m.reverse) {
+			return m.step;
+		}
+		int[] e = monsterSprites.animEntry(m.variant, m.ani);
+		return Math.max(1, e == null ? 1 : e[2]) - 1 - m.step;
+	}
+
+	/**
+	 * DrawGamePlay's world part: tiles with the DrawTile cell rule, the terrain darkening (45 0b),
+	 * units, the hero, emote bubbles, then DrawFade over the view.
+	 */
 	private void drawTiles(Graphics2D g) {
-		int[] cam = camera();
-		int camX = cam[0];
-		int camY = cam[1];
-		// AddSwing: the amplitude and pattern are not traced; a 2 px side-to-side jolt stands in.
-		int swing = shake > 0 ? (shake % 2 == 0 ? 2 : -2) : 0;
-		g.translate(swing, 0);
-		int ox = MAP_X + CELL / 2;
-		int oy = MAP_Y + CELL / 2;
-		for (int y = camY; y < camY + VIEW_H; y++) {
-			for (int x = camX; x < camX + VIEW_W; x++) {
+		if (camMode < 0) {
+			int[] h = heroTarget();
+			cameraOnce(h[0], h[1], 8);
+		}
+		java.awt.Shape clip = g.getClip();
+		g.clipRect(MAP_X, MAP_Y, VIEW_W * CELL, VIEW_H * CELL);
+		// CalcSwing shifts the camera, so the map, units and bubbles shake together; the fade does not.
+		int vx = camX + swingX;
+		int vy = camY + swingY;
+		int ox = MAP_X - vx * CELL / TILE;
+		int oy = MAP_Y - vy * CELL / TILE;
+		int tx0 = Math.floorDiv(vx, TILE);
+		int ty0 = Math.floorDiv(vy, TILE);
+		for (int y = ty0; y <= ty0 + VIEW_H; y++) {
+			for (int x = tx0; x <= tx0 + VIEW_W; x++) {
+				if (!map.inBounds(x, y)) {
+					continue;
+				}
 				int cell = map.cell(x, y);
 				BufferedImage f = cell == 0xff ? null : tiles.patch(map.layer(x, y), cell);
 				if (f != null) {
-					g.drawImage(f, MAP_X + (x - camX) * CELL, MAP_Y + (y - camY) * CELL,
-							CELL, CELL, null);
+					g.drawImage(f, ox + x * CELL, oy + y * CELL, CELL, CELL, null);
 					continue;
 				}
 				// The ground atlas the native build composes at run time is not recovered yet,
 				// so shade the cell from its own byte: the pattern is real data, the art is not.
 				g.setColor(groundColour(cell));
-				g.fillRect(MAP_X + (x - camX) * CELL, MAP_Y + (y - camY) * CELL, CELL, CELL);
+				g.fillRect(ox + x * CELL, oy + y * CELL, CELL, CELL);
 			}
 		}
+		if (dim != 0) {
+			g.setColor(new Color(0, 0, 0, alpha8(dim)));
+			g.fillRect(MAP_X, MAP_Y, VIEW_W * CELL, VIEW_H * CELL);
+		}
 		for (Monster m : monsters) {
-			if (m.hidden || m.x < camX || m.y < camY || m.x >= camX + VIEW_W || m.y >= camY + VIEW_H) {
+			// DrawUnit draws a unit only while +0x42 is below 4.
+			if (m.fade >= 4) {
 				continue;
 			}
-			int cx = ox + (m.x - camX) * CELL;
-			int cy = oy + (m.y - camY) * CELL;
+			int cx = ox + m.x * CELL + CELL / 2;
+			int cy = oy + m.y * CELL + CELL / 2;
 			// InitMonsOne puts the monster's position at the cell centre and DrawMonsAnim draws every
 			// part relative to it, so the pose's anchor goes there; the view scale carries over.
 			PartSprites.Pose pose = monsterSprites == null ? null
-					: m.ani >= 0 ? monsterSprites.pose(m.variant, m.ani, frames, m.mirror)
+					: m.ani >= 0 ? monsterSprites.pose(m.variant, m.ani, unitStep(m), m.mirror)
 					: monsterSprites.standing(m.variant);
 			if (pose != null) {
-				drawPose(g, pose, cx, cy);
+				drawPose(g, pose, cx, cy, m.fade);
 			} else {
 				g.setColor(m.color());
 				g.fillOval(cx - CELL / 2 + 4, cy - CELL / 2 + 4, CELL - 8, CELL - 8);
@@ -766,15 +1038,14 @@ public final class Game extends JFrame {
 				bar(g, cx - CELL / 2 + 2, cy + CELL / 2 - 5, (float) m.hp / m.maxHp, new Color(220, 60, 60));
 			}
 		}
-		int hx = ox + (heroX - camX) * CELL;
-		int hy = oy + (heroY - camY) * CELL;
-		if (!heroHidden) {
+		int hx = ox + heroX * CELL + CELL / 2;
+		int hy = oy + heroY * CELL + CELL / 2;
+		if (heroFade < 4) {
 			// DrawHeroAnim: the hero's position is the cell centre, as for monsters.
 			try {
-				PartSprites.Pose pose = heroAnim.pose(HeroAnim.wearing(items, hero.weapon, heroDir & 3,
-						HeroAnim.ACT_STAND), frames / 2);
+				PartSprites.Pose pose = heroAnim.pose(heroLook(), heroStep);
 				if (pose != null) {
-					drawPose(g, pose, hx, hy);
+					drawPose(g, pose, hx, hy, heroFade);
 				}
 			} catch (IOException e) {
 				log = "영웅 그림 실패: " + e;
@@ -788,16 +1059,15 @@ public final class Game extends JFrame {
 				drawEmote(g, e, hx, hy - 0x28 * CELL / TILE);
 			} else if (monsters.contains(e.target)) {
 				Monster m = e.target;
-				int lift = so.u8(UNIT_HEIGHT + monsterSprites.kind(m.variant));
-				drawEmote(g, e, ox + (m.x - camX) * CELL, oy + (m.y - camY) * CELL - lift * CELL / TILE);
+				drawEmote(g, e, ox + m.x * CELL + CELL / 2, oy + m.y * CELL + CELL / 2 - unitHeight(m) * CELL / TILE);
 			}
 		}
-		g.translate(-swing, 0);
-		if (fade > 0) {
-			int a = Math.min(255, fade * 32);
+		if (fadeV != 0) {
+			int a = alpha8(Math.abs(fadeV));
 			g.setColor(fadeWhite ? new Color(255, 255, 255, a) : new Color(0, 0, 0, a));
 			g.fillRect(MAP_X, MAP_Y, VIEW_W * CELL, VIEW_H * CELL);
 		}
+		g.setClip(clip);
 	}
 
 	/**
@@ -837,19 +1107,32 @@ public final class Game extends JFrame {
 	private static final int UNIT_HEIGHT = 0xc08d4;
 	private static final int EMOTE_OVERLAY = 0xdc108;
 	private static final int EMOTE_CLIP = 0xe5194;
-	/** CollMonsPath moves an NPC 6 px a frame, the hero 8: frames per 16 px cell. */
-	private static final int UNIT_STEP_FRAMES = 3;
-	private static final int HERO_STEP_FRAMES = 2;
+	/** CalcMonsRun's speed table: u8 per id * 5 + 4, plus frame &amp; 1 (NPCs 12, most mobs 6). */
+	private static final int UNIT_SPEED = 0xbfca8;
 
 	/**
-	 * ChangeMonsDir(m, state, dir): the effective state's ani entry for the row the direction
-	 * picks (up 1, down 0, sideways keeps), mirrored for the other side. Dir 8 keeps the direction.
+	 * ChangeMonsDir(m, state, dir). State &lt; 0 keeps +0x20; NPCs fold 2 and 0x11 to 1 and 4 to 3,
+	 * and a new state restarts the unit's step (+0x29 = +0x2a = 0). The effective state's ani entry
+	 * is read for the row the direction picks (up 1, down 0, sideways keeps); an NPC standing (1)
+	 * takes the state-2 idle entry when Rand1000 &lt;= 0x14c. The mirror flips for the other side
+	 * (never for id 0x7f). Dir 8 keeps the direction; state 0xf faces dir ^ 1.
 	 */
 	private void changeDir(Monster m, int state, int dir) {
+		if (state >= 0) {
+			if (m.variant >= NPC_ID) {
+				state = state == 2 || state == 0x11 ? 1 : state == 4 ? 3 : state;
+			}
+			if (state != m.aniState) {
+				m.step = 0;
+				m.held = 0;
+			}
+			m.aniState = state;
+		}
+		state = m.aniState;
 		if (dir == 8) {
 			dir = m.dir;
 		}
-		int s = state <= 9 ? state : state == 0xd ? 9 : state == 0xe || state == 0x11 || state == 0x12 ? 1
+		int s = state <= 9 ? Math.max(0, state) : state == 0xd ? 9 : state == 0xe || state == 0x11 || state == 0x12 ? 1
 				: state == 0xf || state == 0x10 ? 8 : 3;
 		if ((byte) so.u8(UNIT_FLAGS + m.variant) < 0) {
 			m.row = 0;
@@ -858,66 +1141,269 @@ public final class Game extends JFrame {
 		} else if (dir == 1 || dir == 5 || dir == 7) {
 			m.row = 0;
 		}
-		int ani = (byte) so.u8(UNIT_ANI + (m.variant * 10 + s) * 2 + m.row);
+		int row = m.variant >= NPC_ID && s == 1 && rng.nextInt(1000) <= 0x14c ? 2 : s;
+		int ani = (byte) so.u8(UNIT_ANI + (m.variant * 10 + row) * 2 + m.row);
 		if (ani != -99) {
 			m.ani = ani;
 		}
-		if (dir == 3 || dir == 4 || dir == 7) {
+		m.reverse = false;
+		if (m.variant == 0x7f) {
+			m.mirror = false;
+		} else if (dir == 3 || dir == 4 || dir == 7) {
 			m.mirror = m.row == 0;
 		} else if (dir == 2 || dir == 5 || dir == 6) {
 			m.mirror = m.row != 0;
 		}
-		m.dir = dir;
+		m.dir = state == 0xf ? dir ^ 1 : dir;
 	}
 
-	/** Per-frame decay of the fade, the shake and the emote bubbles (16 frames each). */
+	/** ChangeHeroAct(n): a new act starts from its first step. */
+	private void changeHeroAct(int act) {
+		heroAct = act;
+		heroStep = 0;
+		heroHeld = 0;
+	}
+
+	/** 83 / e3: hero+0x44 |= 4 and act 1 (walking) toward a cell, arriving facing {@code dir}. */
+	private void startHeroWalk(int x, int y, int dir) {
+		heroGoX = x;
+		heroGoY = y;
+		heroGoDir = dir;
+		heroPx = 0;
+		changeHeroAct(HeroAnim.ACT_WALK);
+	}
+
+	/** hero+0x44 &amp;= ~4: a walk in progress stops where it is and the hero stands. */
+	private void stopHeroWalk() {
+		if (heroGoX >= 0) {
+			heroGoX = -1;
+			heroPx = 0;
+			changeHeroAct(HeroAnim.ACT_STAND);
+		}
+	}
+
+	/** LoadMonsToTemp trades ids 0xad..0xc8 through this u8 table (paired ids swap). */
+	private static final int SPAWN_SWAP = 0xbcaf8;
+
+	/** CalcGamePlay's speed reset 37 frames after 45 06/07 (+0x2ee0 past 0x24), and the emote lifetime. */
 	private void tickEffects() {
-		fade = Math.max(0, Math.min(8, fade + fadeStep));
-		if (fade == 0 || fade == 8) {
-			fadeStep = 0;
+		if (speed != 0 && ++speedFrames > 0x24) {
+			speed = 0;
 		}
-		if (shake > 0) {
-			shake--;
-		}
+		loop.setDelay(speed < 0 ? 83 : 62);
 		emotes.removeIf(e -> ++e.frame > 15);
 	}
 
-	/** CalcHeroAct / CalcMonsRun for script walks: one cell per step time, straight or diagonal. */
-	private void scriptMoves() {
-		if (heroGoX >= 0 && --heroGoWait <= 0) {
-			int dx = Integer.compare(heroGoX, heroX);
-			int dy = Integer.compare(heroGoY, heroY);
-			if (dx == 0 && dy == 0) {
-				if (heroGoDir != 8) {
-					heroDir = heroGoDir & 3;
+	/**
+	 * What drawing the last frame advanced: DrawFade's value, and while the world is not frozen
+	 * CalcHeroAnim / CalcMonsAnim (one step per drawn frame, each step held for its delay byte) and
+	 * the hero's and units' fade steps. DrawUnit draws them only below fade 4, so they stop there.
+	 */
+	private void drawnFrame() {
+		if (fadeV != 0 && fadeV < 8) {
+			fadeV++;
+		}
+		if (frozen) {
+			return;
+		}
+		if (heroFade < 4 && heroAnim != null) {
+			try {
+				HeroAnim.Look look = heroLook();
+				if (heroHeld < heroAnim.delay(look, heroStep)) {
+					heroHeld++;
+				} else {
+					heroHeld = 0;
+					heroStep = (heroStep + 1) % heroAnim.steps(look);
 				}
-				heroGoX = -1;
-			} else {
-				heroX += dx;
-				heroY += dy;
-				heroDir = dx < 0 ? 2 : dx > 0 ? 3 : dy < 0 ? 0 : 1;
-				heroGoWait = HERO_STEP_FRAMES;
+			} catch (IOException e) {
+				log = "영웅 그림 실패: " + e;
+			}
+			if (heroFade != 0) {
+				heroFade++;
 			}
 		}
 		for (Monster m : monsters) {
-			if (m.lock > 0 && --m.lock == 0) {
-				changeDir(m, 1, 8);
-			}
-			if (m.goX < 0 || --m.goWait > 0) {
+			if (m.fade >= 4) {
 				continue;
 			}
-			int dx = Integer.compare(m.goX, m.x);
-			int dy = Integer.compare(m.goY, m.y);
+			if (monsterSprites != null && m.ani >= 0) {
+				int[] e = monsterSprites.animEntry(m.variant, m.ani);
+				int n = e == null ? 1 : Math.max(1, e[2]);
+				m.step %= n;
+				if (m.held < monsterSprites.delay(m.variant, m.ani, unitStep(m))) {
+					m.held++;
+				} else {
+					m.held = 0;
+					if (++m.step >= n) {
+						m.step = 0;
+						m.wrapped = true;
+					}
+				}
+			}
+			if (m.fade != 0 && m.fade >= -3) {
+				m.fade++;
+			}
+		}
+	}
+
+	/** The head of DrawGamePlay: CalcSwing's camera offset for this frame, and the terrain darkening step. */
+	private void drawSetup() {
+		if (swingPat == 0) {
+			swingX = 0;
+			swingY = 0;
+		} else {
+			int at = SWING + ((swingPat - 1) * 4 + swingCnt) * 2;
+			swingX = so.s8(at);
+			swingY = so.s8(at + 1);
+			if (--swingCnt < 0) {
+				swingPat = 0;
+			}
+		}
+		if (dim != 0 || dimUp != 0) {
+			if (dimUp == 0) {
+				dim--;
+			} else if (dim < 4) {
+				dim++;
+			}
+		}
+	}
+
+	/** CalcHeroAct and CalcMons under a phase (ProcGame's part after CalcCamera); nothing while frozen. */
+	private void scriptMoves() {
+		if (frozen) {
+			return;
+		}
+		heroScript();
+		for (Monster m : monsters) {
+			unitScript(m);
+		}
+	}
+
+	/**
+	 * CalcHeroAct's script branch. A walk (83, e3) moves 8 px a frame straight and 6 diagonally
+	 * (CollHeroPath) and lands with act 0 facing its arrival direction. A b3 action counts its
+	 * cycles: each time the animation is back at step 0 (CalcHeroAnim wrapped) p drops by one,
+	 * and below 0 the action ends; act 1 (b3 0x23) walks straight ahead meanwhile. Outside an
+	 * action the hero holds its pose: act 4 lies at step 8, acts 7 and 8 kneel as act 7 step 5, the
+	 * rest stand. The route is a straight/diagonal line: this port has no collision map for
+	 * GetHeroRouting's breadth-first search.
+	 */
+	private void heroScript() {
+		if (heroGoX >= 0) {
+			int dx = Integer.compare(heroGoX, heroX);
+			int dy = Integer.compare(heroGoY, heroY);
 			if (dx == 0 && dy == 0) {
-				m.goX = -1;
-				changeDir(m, 1, m.goDir);
-				continue;
+				heroGoX = -1;
+				heroPx = 0;
+				heroDir = heroGoDir;
+				changeHeroAct(HeroAnim.ACT_STAND);
+			} else {
+				heroDir = stepDir(dx, dy);
+				heroPx += dx != 0 && dy != 0 ? 6 : 8;
+				if (heroPx >= TILE) {
+					heroPx -= TILE;
+					heroX += dx;
+					heroY += dy;
+				}
 			}
+			return;
+		}
+		if (!heroActRun) {
+			holdHeroPose();
+			return;
+		}
+		if (heroAct == HeroAnim.ACT_WALK) {
+			heroPx += heroDir >= 4 ? 6 : 8;
+			if (heroPx >= TILE) {
+				heroPx -= TILE;
+				int nx = heroX + DIR_STEP[heroDir][0];
+				int ny = heroY + DIR_STEP[heroDir][1];
+				if (map.inBounds(nx, ny)) {
+					heroX = nx;
+					heroY = ny;
+				}
+			}
+		}
+		if (heroStep == 0 && heroHeld == 0 && --heroActLeft < 0) {
+			heroActRun = false;
+			heroPx = 0;
+			holdHeroPose();
+		}
+	}
+
+	private void holdHeroPose() {
+		switch (heroAct) {
+			case HeroAnim.ACT_STAND -> {
+			}
+			case HeroAnim.ACT_FALL -> {
+				heroStep = 8;
+				heroHeld = 0;
+			}
+			case 7, 8 -> {
+				heroAct = 7;
+				heroStep = 5;
+				heroHeld = 0;
+			}
+			default -> changeHeroAct(HeroAnim.ACT_STAND);
+		}
+	}
+
+	/**
+	 * CalcMons / CalcMonsAct for a unit under a phase; nothing while +0x42 is 1 or more. An action
+	 * lock (63, flag 0x8000) ends when the unit's animation is back at step 0: state 0 stays, state
+	 * 9 lies on its last step, 1 / 3 / 0xb stand (1), the rest go to 0x11. A state-9 unit keeps its
+	 * last step afterwards; a standing NPC draws its idle variant again after every cycle. A
+	 * scripted walk moves v &gt;&gt; 1 px a frame straight and (7v + 4) / 20 diagonally with
+	 * v = CalcMonsRun's speed + (frame &amp; 1), in a straight/diagonal line (no collision map for
+	 * GetMonsRouting).
+	 */
+	private void unitScript(Monster m) {
+		if (m.fade >= 1) {
+			return;
+		}
+		if (m.lock) {
+			if (m.step == 0 && m.held == 0) {
+				m.lock = false;
+				switch (m.aniState) {
+					case 0 -> {
+					}
+					case 9 -> m.step = lastStep(m);
+					case 1, 3, 0xb -> changeDir(m, 1, 8);
+					default -> changeDir(m, 0x11, 8);
+				}
+			}
+		} else if (m.aniState == 9) {
+			m.step = lastStep(m);
+			m.held = 0;
+		} else if (m.wrapped && m.aniState == 1 && m.variant >= NPC_ID) {
+			changeDir(m, -1, 8);
+		}
+		m.wrapped = false;
+		if (m.goX < 0) {
+			return;
+		}
+		int dx = Integer.compare(m.goX, m.x);
+		int dy = Integer.compare(m.goY, m.y);
+		if (dx == 0 && dy == 0) {
+			m.goX = -1;
+			m.goPx = 0;
+			changeDir(m, 1, m.goDir);
+			return;
+		}
+		changeDir(m, 0xc, stepDir(dx, dy));
+		int v = Math.max(2, so.u8(UNIT_SPEED + m.variant * 5 + 4) + (frames & 1));
+		m.goPx += dx != 0 && dy != 0 ? (v * 7 + 4) / 20 : v >> 1;
+		if (m.goPx >= TILE) {
+			m.goPx -= TILE;
 			m.x += dx;
 			m.y += dy;
-			changeDir(m, 3, stepDir(dx, dy));
-			m.goWait = UNIT_STEP_FRAMES;
 		}
+	}
+
+	/** The last step of the unit's current ani entry. */
+	private int lastStep(Monster m) {
+		int[] e = monsterSprites == null ? null : monsterSprites.animEntry(m.variant, m.ani);
+		return e == null ? 0 : Math.max(1, e[2]) - 1;
 	}
 
 	private static int stepDir(int dx, int dy) {
@@ -941,7 +1427,7 @@ public final class Game extends JFrame {
 	/** CheckHeroOnNPC: OK next to an NPC runs its type-4 event. */
 	private void talkToNpc() {
 		for (Monster m : monsters) {
-			if (m.npc && !m.hidden && Math.abs(m.x - heroX) <= 1 && Math.abs(m.y - heroY) <= 1) {
+			if (m.npc && m.fade <= 0 && Math.abs(m.x - heroX) <= 1 && Math.abs(m.y - heroY) <= 1) {
 				changeDir(m, 1, stepDir(Integer.compare(heroX, m.x), Integer.compare(heroY, m.y)));
 				npcName = m.kind;
 				if (events.searchUnit(4, m.uid)) {
@@ -969,8 +1455,11 @@ public final class Game extends JFrame {
 	private final class Stage implements EventRunner.World {
 		@Override
 		public void heroStop() {
-			// SetPhaseHeroStop freezes the hero and monsters; gameTick already skips both while a
-			// phase runs, and a player walk is one cell per key, so nothing is left to stop.
+			// SetPhaseHeroStop: acts 1, 0x1e and 7 go back to standing; gameTick already keeps the
+			// monsters still under a phase. A scripted walk keeps its act 1 [inferred: CalcHeroActEMove owns it].
+			if (heroGoX < 0 && (heroAct == HeroAnim.ACT_WALK || heroAct == 0x1e || heroAct == 7)) {
+				changeHeroAct(HeroAnim.ACT_STAND);
+			}
 		}
 
 		@Override
@@ -980,47 +1469,129 @@ public final class Game extends JFrame {
 				heroY = y;
 			}
 			if (dir != 8) {
-				heroDir = dir & 3;
+				heroDir = dir;
 			}
-			heroGoX = -1;
+			// 73 and 83 ff ff cancel a walk (hero+0x44 &= ~4).
+			stopHeroWalk();
 		}
 
 		@Override
 		public void heroWalk(int x, int y, int dir) {
-			if (x == 0xff && y == 0xff) {
+			// ff ff only turns; on a black screen (wawamain+0x2ec0 >= 8) the hero is put there at once.
+			if (x == 0xff && y == 0xff || fadeV >= 8) {
 				heroPlace(x, y, dir);
 				return;
 			}
-			if (events.mode == 2) {
-				heroPlace(x, y, dir);
-				return;
+			// The arrival direction is fixed now: 8 means the direction the hero faces at the command.
+			startHeroWalk(x, y, dir == 8 ? heroDir : dir);
+		}
+
+		@Override
+		public int heroVisible(boolean visible, int x, int y, int dir) {
+			boolean black = fadeV >= 8;
+			if (visible) {
+				// 93 places the hero without cancelling a walk. Its companion unit (DAT_01418338)
+				// has no counterpart in this port.
+				if (x != 0xff || y != 0xff) {
+					heroX = x;
+					heroY = y;
+				}
+				if (dir != 8) {
+					heroDir = dir;
+				}
+				if (heroFade == 0) {
+					return 0;
+				}
+				heroFade = black ? 0 : -3;
+				return 4;
 			}
-			heroGoX = x;
-			heroGoY = y;
-			heroGoDir = dir;
-			heroGoWait = 1;
+			if (heroFade > 0) {
+				return 0;
+			}
+			heroFade = black ? 4 : 1;
+			return 4;
 		}
 
+		/**
+		 * b3 dir act p (fp case 0xb): the acts that call ChangeHeroAct(n) start n and set
+		 * hero+0x44 bit 8 until p + 1 animation cycles have played (p = 0xff plays one); the
+		 * others only turn. 05 starts act 4 on its last step (lying), 06 plays it backwards (0x1d,
+		 * getting up), 0x23 walks ahead (act 1). Attack timing (GetHeroAttackFrame), effects and
+		 * sounds are not ported.
+		 */
 		@Override
-		public void heroVisible(boolean visible, int x, int y, int dir) {
-			heroHidden = !visible;
-			heroPlace(x, y, dir);
-		}
-
-		@Override
-		public void heroAct(int dir, int act) {
+		public int heroAct(int dir, int act, int repeat) {
 			if (dir != 8) {
-				heroDir = dir & 3;
+				heroDir = dir;
 			}
-			if (act != 0) {
-				notPorted("영웅 행동 " + act);
+			heroActLeft = (byte) repeat;
+			int n = switch (act) {
+				case 0x01 -> 9;
+				case 0x02 -> 3;
+				case 0x04, 0x05 -> HeroAnim.ACT_FALL;
+				case 0x06 -> HeroAnim.ACT_RISE;
+				case 0x07 -> 2;
+				case 0x08 -> 10;
+				case 0x09 -> 0xd;
+				case 0x10 -> 7;
+				case 0x11 -> 8;
+				case 0x12 -> HeroAnim.ACT_SIT;
+				case 0x13 -> 0x2a;
+				case 0x14 -> 0x2b;
+				case 0x23 -> HeroAnim.ACT_WALK;
+				default -> -1;
+			};
+			if (n >= 0) {
+				changeHeroAct(n);
+				heroActRun = true;
+				heroPx = 0;
+				if (act == 0x05) {
+					heroStep = 8;
+				}
+				if (act == 0x13 || act == 0x14) {
+					notPorted("효과음 " + (act == 0x13 ? 0x28 : 0x2a));
+				}
+				return 0;
 			}
+			switch (act) {
+				case 0x0a -> {
+					// hero+0x47 = 6 asks InitHeroAttack for an attack; which one is not traced.
+					heroActRun = true;
+					notPorted("영웅 공격 요청 6");
+				}
+				case 0x0c, 0x0e, 0x0f -> {
+					notPorted("영웅 효과 " + act);
+					return 3;
+				}
+				case 0x0d -> {
+					notPorted("영웅 효과 " + act);
+					return 4;
+				}
+				default -> {
+					if (act >= 0x15 && act <= 0x22) {
+						notPorted("영웅 공격 요청 " + act);
+					}
+				}
+			}
+			return 0;
 		}
 
 		@Override
 		public void heroToUnit(int uid, int side) {
-			// The side offsets sit in a WIPI table (0x5b72c / 0x5b735) not located in libwawa.so.
-			notPorted("영웅을 유닛 옆으로 이동");
+			Monster m = Game.this.unit(uid);
+			if (m == null) {
+				return;
+			}
+			int x = m.x + DIR_STEP[Math.min(side, 8)][0];
+			int y = m.y + DIR_STEP[Math.min(side, 8)][1];
+			if (fadeV >= 8) {
+				heroX = x;
+				heroY = y;
+				stopHeroWalk();
+				return;
+			}
+			// e3 arrives facing the way the hero faces now (+0xa2 = +5).
+			startHeroWalk(x, y, heroDir);
 		}
 
 		@Override
@@ -1029,17 +1600,23 @@ public final class Game extends JFrame {
 			if (a >= kinds.length) {
 				return 4;
 			}
+			// f74[depth] * 0x100 + a; this port's phase instance byte is always 1.
 			int uid = 0x100 + a;
 			Monster old = Game.this.unit(uid);
 			if (old != null) {
 				monsters.remove(old);
 			}
 			int id = kinds[a];
+			if (id > 0xac && id < 0xc9) {
+				id = so.u8(SPAWN_SWAP + id - 0xad);
+			}
 			String name = monsterSprites.name(id);
 			Monster m = new Monster(x, y, name != null ? name : "#" + id, 1, 0, id, false, x, y, x, y);
 			m.uid = uid;
 			m.npc = true;
 			changeDir(m, (byte) so.u8(UNIT_ANI + id * 20) == -99 ? 1 : 0, dir == 8 ? rng.nextInt(8) : dir);
+			// LoadGameMonsOne: a new unit fades in over 3 frames, at once on a black screen.
+			m.fade = fadeV >= 8 ? 0 : -3;
 			monsters.add(m);
 			return 4;
 		}
@@ -1048,66 +1625,108 @@ public final class Game extends JFrame {
 		public int unit(int hi, int uid, int x, int y, int dir) {
 			Monster m = Game.this.unit(uid);
 			if (m == null) {
-				return -1;
+				return 0;
 			}
+			boolean black = fadeV >= 8;
 			switch (hi) {
 				case 1 -> monsters.remove(m);
 				case 2 -> {
 					m.x = x;
 					m.y = y;
-					m.goX = -1;
-					changeDir(m, 1, dir);
+					// 23 ends a waited walk (0x4000) and stands; otherwise it only turns, and an
+					// unwaited walk goes on from the new cell.
+					if (m.goX >= 0 && m.goHold) {
+						m.goX = -1;
+						m.goPx = 0;
+						changeDir(m, 1, dir);
+					} else {
+						changeDir(m, -1, dir);
+					}
 				}
 				case 3 -> {
-					if (events.mode == 2) {
+					// 33 x y f: bit 7 is an unwaited walk (0x1000), which walks even on a black
+					// screen; a waited one (0x4000) lands at once there.
+					boolean hold = (dir & 0x80) == 0;
+					if (hold && black) {
 						m.x = x;
 						m.y = y;
+						m.goX = -1;
 						changeDir(m, 1, dir & 0x7f);
 					} else {
 						m.goX = x;
 						m.goY = y;
 						m.goDir = dir & 0x7f;
-						m.goWait = 1;
-						m.goHold = (dir & 0x80) == 0;
+						m.goPx = 0;
+						m.goHold = hold;
 					}
 				}
-				// +0x42 is the unit's fade step, like the hero's: 43 sets -3 (fade in, as a new unit
-				// does), 53 sets 1 (fade out). t01 sends units off the map edge and then 53s them.
+				// +0x42 is the unit's fade step: 43 sets -3 (fading in over 3 frames) unless the unit
+				// is fully shown, 53 sets 1 (fading out, unseen from 4) unless it already fades out.
 				case 4 -> {
-					m.hidden = false;
+					if (m.fade == 0) {
+						return 0;
+					}
+					m.fade = black ? 0 : -3;
 					return 4;
 				}
 				case 5 -> {
-					m.hidden = true;
+					if (m.fade > 0) {
+						return 0;
+					}
+					m.fade = black ? 4 : 1;
 					return 4;
 				}
 				case 6 -> {
-					// x and y carry 63's dir and act; only the acts t01/t02 use are mapped.
-					int act = y;
-					int state = switch (act) {
-						case 0 -> 0;
-						case 1 -> 6;
-						case 2 -> 8;
-						case 3 -> 5;
-						case 4, 5 -> 9;
-						case 6 -> 0xd;
-						case 0x23 -> 3;
-						default -> -1;
-					};
-					if (state < 0) {
-						notPorted("유닛 행동 " + act);
-						return 0;
-					}
-					changeDir(m, state, x);
-					int[] entry = monsterSprites.animEntry(m.variant, m.ani);
-					// The lock lasts until the animation ends; the port plays two frames per step.
-					m.lock = entry == null ? 1 : Math.max(1, entry[2]) * 2;
-					return act == 3 ? -1 : 0;
+					return unitAct(m, x, y);
 				}
 				default -> {
 				}
 			}
 			return 0;
+		}
+
+		/**
+		 * 63 U d act (fp:289e8 l.218-436): the act's state, only when the id has that state (ani
+		 * entry != -99), then the 0x8000 lock with +0x2a = 1. Act 5 starts on the last step, act 6
+		 * plays state 9 backwards (+0x2c = ~ani). Boss acts and effects are not ported.
+		 */
+		private int unitAct(Monster m, int dir, int act) {
+			if (m.hp < 1) {
+				return 0;
+			}
+			if (act == 0xc || act == 0xd || act == 0xe || act == 0xf) {
+				notPorted("유닛 효과 " + act);
+				return act == 0xd ? 4 : 3;
+			}
+			int state = switch (act) {
+				case 0 -> 0;
+				case 1 -> 6;
+				case 2 -> 8;
+				case 3 -> 5;
+				case 4, 5, 6 -> 9;
+				case 0x23 -> 3;
+				default -> -1;
+			};
+			if (state < 0) {
+				notPorted("유닛 행동 " + act);
+				return 0;
+			}
+			if ((byte) so.u8(UNIT_ANI + (m.variant * 10 + state) * 2) == -99) {
+				return 0;
+			}
+			changeDir(m, act == 6 ? 0xd : state, dir);
+			m.reverse = act == 6;
+			if (act == 5) {
+				m.step = lastStep(m);
+			}
+			m.held = 1;
+			m.lock = true;
+			return act == 3 ? -1 : 0;
+		}
+
+		@Override
+		public boolean unitExists(int uid) {
+			return Game.this.unit(uid) != null;
 		}
 
 		@Override
@@ -1117,11 +1736,12 @@ public final class Game extends JFrame {
 
 		@Override
 		public boolean moving() {
-			if (heroGoX >= 0) {
+			// map+0x13d4, hero+0x44 & 0xc, units' +6 & 0xc000.
+			if (camScrolling || heroGoX >= 0 || heroActRun) {
 				return true;
 			}
 			for (Monster m : monsters) {
-				if (m.goX >= 0 && m.goHold || m.lock > 0) {
+				if (m.goX >= 0 && m.goHold || m.lock) {
 					return true;
 				}
 			}
@@ -1130,16 +1750,44 @@ public final class Game extends JFrame {
 
 		@Override
 		public void arriveAll() {
+			// CalcPhase result 5 on a black screen: waited walks land (ChangeMonsDir(1, +0x4a)) and
+			// every unit's +6 &= 0x1fff; a hero walk lands with act 0, and hero+0x44 &= 0xf1.
 			if (heroGoX >= 0) {
-				heroPlace(heroGoX, heroGoY, heroGoDir);
+				heroX = heroGoX;
+				heroY = heroGoY;
+				heroDir = heroGoDir;
+				stopHeroWalk();
 			}
+			heroActRun = false;
 			for (Monster m : monsters) {
-				if (m.goX >= 0) {
+				if (m.goX >= 0 && m.goHold) {
 					m.x = m.goX;
 					m.y = m.goY;
 					m.goX = -1;
+					m.goPx = 0;
 					changeDir(m, 1, m.goDir);
 				}
+				m.lock = false;
+			}
+		}
+
+		@Override
+		public void extraTick() {
+			calcCamera();
+			scriptMoves();
+		}
+
+		@Override
+		public int fadeLevel() {
+			return fadeV;
+		}
+
+		@Override
+		public void fadeRestore() {
+			if (fadeV >= 8) {
+				fadeV = -7;
+			} else if (fadeV > 0) {
+				fadeV = 1 - fadeV;
 			}
 		}
 
@@ -1157,28 +1805,51 @@ public final class Game extends JFrame {
 			events.loadMap(EventScript.map(assetsRoot, mapCode));
 		}
 
+		/**
+		 * 45 k (fp m_0x291e8 359-438). 00/03 darken from 1/8 over 8 frames, 01/04 lighten from 7/8
+		 * over 6 (from opaque over 8 when fully covered), black or white; 02/05 cover at once. In
+		 * the skip modes they jump to the end. 06/07/08 set the game speed (07 slowest, 37 frames),
+		 * 09/0a freeze and release the world, 0b/0c darken the terrain up to 4/8 and back.
+		 */
 		@Override
 		public int fade(int k, int mode) {
 			switch (k) {
 				case 0, 3 -> {
 					fadeWhite = k == 3;
-					if (mode == 0) {
-						fadeStep = 1;
-						return 8;
+					if (mode != 0) {
+						fadeV = 8;
+						return 0;
 					}
-					fade = 8;
+					fadeV = 1;
+					return 8;
 				}
 				case 1, 4 -> {
-					if (mode == 0) {
-						fadeStep = -1;
-						return fade == 8 ? 8 : 6;
+					fadeWhite = k == 4;
+					if (mode != 0) {
+						fadeV = 0;
+						return 0;
 					}
-					fade = 0;
+					boolean covered = fadeV == 8;
+					fadeV = covered ? -9 : -7;
+					return covered ? 8 : 6;
 				}
 				case 2, 5 -> {
 					fadeWhite = k == 5;
-					fade = 8;
-					fadeStep = 0;
+					fadeV = 8;
+				}
+				case 6, 7, 8 -> {
+					// The frame counter restarting here is assumed [inferred].
+					speed = k == 6 ? 1 : k == 7 ? -1 : 0;
+					speedFrames = 0;
+				}
+				case 9, 0xa -> frozen = k == 9;
+				case 0xb -> {
+					dimUp = 1;
+					return 4 - dim;
+				}
+				case 0xc -> {
+					dimUp = 0;
+					return dim;
 				}
 				default -> notPorted("화면 효과 " + k);
 			}
@@ -1187,7 +1858,12 @@ public final class Game extends JFrame {
 
 		@Override
 		public void shake(int n) {
-			shake = n;
+			// AddSwing: a new pattern takes over unless one just started with a lower number.
+			// g_aptSwing holds patterns 1..10; anything past it does not shake.
+			if (swingCnt < 2 || n < swingPat) {
+				swingPat = n <= 10 ? n : 0;
+				swingCnt = 3;
+			}
 		}
 
 		@Override
@@ -1206,33 +1882,51 @@ public final class Game extends JFrame {
 				}
 			}
 			if (emotes.size() < 10) {
-				emotes.add(new Emote(m, kind));
+				Emote e = new Emote(m, kind);
+				// In the skip modes a new bubble starts at frame 14, two frames from its end.
+				e.frame = events.mode != 0 ? 0xe : 0;
+				emotes.add(e);
 			}
 		}
 
+		/**
+		 * 08 stops the camera; 18 jumps and 28 scrolls to the tile corner (x * 16, y * 16); 38 / 48
+		 * jump to the hero or a unit and follow it, centred or leading in its direction, 58 / 68
+		 * follow the same way by scrolling. A follow target is the hero 20 px up or the unit lifted
+		 * by its kind's height. 0 is this port's return to the free-play camera.
+		 */
 		@Override
 		public void camera(int op, int x, int y, int target) {
 			switch (op) {
 				case 0 -> {
-					camCentre = null;
+					camMode = -1;
 					camUnit = null;
 				}
-				// 18 jumps and 28 scrolls to the cell corner (x * 16, y * 16); the port's camera is
-				// cell-aligned, so both centre on cell (x, y).
+				case 0x10 -> camMode = 0xff;
 				case 0x11, 0x12 -> {
-					camCentre = new int[] { x, y };
+					camPX = x * TILE;
+					camPY = y * TILE;
+					if (op == 0x11) {
+						cameraOnce(camPX, camPY, 8);
+					}
+					camMode = 3;
 					camUnit = null;
 				}
 				case 0x13, 0x14, 0x15, 0x16 -> {
-					camCentre = null;
-					camUnit = target == EventRunner.HERO ? null : Game.this.unit(target);
+					Monster u = target == EventRunner.HERO ? null : Game.this.unit(target);
+					if (target != EventRunner.HERO && u == null) {
+						return;
+					}
+					boolean lead = op == 0x14 || op == 0x16;
+					camUnit = u;
+					camMode = u == null ? (lead ? 0 : 1) : (lead ? 2 : 4);
+					if (op <= 0x14) {
+						int[] t = u == null ? heroTarget() : unitTarget(u);
+						cameraOnce(t[0], t[1], !lead ? 8 : u == null ? heroDir : u.dir & 3);
+					}
 				}
-				case 0x10 -> {
-					// 08 stops following; the view stays where it is.
-					int[] cam = Game.this.camera();
-					camCentre = new int[] { cam[0] + VIEW_W / 2, cam[1] + VIEW_H / 2 };
-					camUnit = null;
-				}
+				// SetCamping places map objects 0..4 and their collision bits; this port draws no
+				// map objects and has no collision map (t02's 95 / a5 only).
 				default -> notPorted("야영지 배치");
 			}
 		}
@@ -1265,11 +1959,19 @@ public final class Game extends JFrame {
 			Game.this.save();
 		}
 
+		/**
+		 * Kind-4 integers from hero+0xa4: 2 level (+0xac), 3 HP (+0xb0), 4 max HP (+0xb4), 6 max MP
+		 * (+0xbc) — InitHeroState writes +0xb4 and +0xbc (max MP = pow112(INT) * 6 >> 4, as
+		 * {@link Hero#maxMp}), and a01 sets HP to hero[4] / 5. The maxima are derived values, so
+		 * writes to them do not stick; MP (+0xb8) and the rest have no field here and are kept as is.
+		 */
 		@Override
 		public int heroInt(int i) {
 			return switch (i) {
 				case 2 -> hero.level;
 				case 3 -> hero.hp;
+				case 4 -> hero.maxHp;
+				case 6 -> hero.maxMp;
 				default -> heroInts[i & 0xff];
 			};
 		}
@@ -1279,6 +1981,8 @@ public final class Game extends JFrame {
 			switch (i) {
 				case 2 -> hero.level = v;
 				case 3 -> hero.hp = Math.min(hero.maxHp, v);
+				case 4, 6 -> {
+				}
 				default -> heroInts[i & 0xff] = v;
 			}
 		}
@@ -1522,15 +2226,23 @@ public final class Game extends JFrame {
 		int row;
 		boolean mirror;
 		int dir = 1;
-		/** A script walk (33): target cell, arrival direction, frames to the next step, waited on. */
+		/** A script walk (33): target cell, arrival direction, px into the next cell, waited on (0x4000). */
 		int goX = -1;
 		int goY;
 		int goDir;
-		int goWait;
+		int goPx;
 		boolean goHold;
-		boolean hidden;
-		/** Frames an action (63) holds the phase, as the 0x8000 lock does. */
-		int lock;
+		/** +0x42: fade step, -3..-1 fading in, 1..3 fading out, 4 and up unseen and still. */
+		int fade;
+		/** The 0x8000 action lock (63), held until the action's animation cycle ends. */
+		boolean lock;
+		/** ChangeMonsDir's state (+0x20; -1 none yet), +0x29 step, +0x2a frames held, and +0x2c &lt; 0 (played backwards). */
+		int aniState = -1;
+		int step;
+		int held;
+		boolean reverse;
+		/** The animation came back to step 0 since the last CalcMonsAct. */
+		boolean wrapped;
 
 		Monster(int x, int y, String kind, int hp, int atk, int variant, boolean aggressive,
 				int loX, int loY, int hiX, int hiY) {
@@ -1609,7 +2321,12 @@ public final class Game extends JFrame {
 		onKey(KeyEvent.VK_ENTER);
 		writeFrame(new java.io.File(dir, "slots.png"));
 		onKey(KeyEvent.VK_ENTER);
+		writeFrame(new java.io.File(dir, "newgame-default.png"));
 		onKey(KeyEvent.VK_ENTER);
+		// The box starts with the default "크리스노아"; clear it and type another name.
+		for (int i = 0; i < 5; i++) {
+			onKey(KeyEvent.VK_BACK_SPACE);
+		}
 		for (char c : "와와".toCharArray()) {
 			slotScreen.typed(c);
 		}
@@ -1671,7 +2388,7 @@ public final class Game extends JFrame {
 
 	private void writeFrame(java.io.File file) throws IOException {
 		java.awt.image.BufferedImage img = new java.awt.image.BufferedImage(
-				VIEW_W * CELL + 16, MAP_Y + VIEW_H * CELL + 46, java.awt.image.BufferedImage.TYPE_INT_RGB);
+				BASE_W, BASE_H, java.awt.image.BufferedImage.TYPE_INT_RGB);
 		Graphics2D g2 = img.createGraphics();
 		draw(g2);
 		g2.dispose();

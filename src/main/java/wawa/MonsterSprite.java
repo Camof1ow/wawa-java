@@ -76,6 +76,15 @@ public final class MonsterSprite {
 		return kinds.animEntry(kinds.kind(monsterId), ani);
 	}
 
+	/** Frames step {@code step} of entry {@code ani} holds beyond its first. */
+	int delay(int monsterId, int ani, int step) {
+		try {
+			return anim.delay(monsterId, ani, step);
+		} catch (IOException e) {
+			return 0;
+		}
+	}
+
 	public int palette(int monsterId) {
 		return kinds.palette(monsterId);
 	}

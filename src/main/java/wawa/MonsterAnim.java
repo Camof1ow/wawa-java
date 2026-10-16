@@ -55,6 +55,21 @@ public final class MonsterAnim {
 		return out;
 	}
 
+	/**
+	 * The delay byte of the step's first A record: the step shows delay + 1 frames. CalcHeroAnim
+	 * reads it so; CalcMonsAnim is assumed to do the same [inferred].
+	 */
+	int delay(int monsterId, int state, int step) throws IOException {
+		int kind = data.kind(monsterId);
+		int[] entry = data.animEntry(kind, state);
+		if (entry == null) {
+			return 0;
+		}
+		PartSprites.Dat dat = sprites.dat(data.dat(kind));
+		int frame = entry[1] + Math.floorMod(step, Math.max(1, entry[2]));
+		return frame < 0 || frame >= dat.chain().length ? 0 : dat.chain()[frame][3];
+	}
+
 	/** Composes one animation step into an image, or null when nothing in it can be decoded. */
 	public PartSprites.Pose pose(int monsterId, int state, int step) throws IOException {
 		return pose(monsterId, state, step, false);

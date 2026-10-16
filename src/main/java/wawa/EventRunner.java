@@ -46,31 +46,57 @@ final class EventRunner {
 
 		/**
 		 * 93 / a3: the hero appears where it is placed, or vanishes. Hero +0x1d is a fade step that
-		 * DrawHeroAnim moves up by one per frame and draws at alpha |step| (6 and up unseen): 93 sets
-		 * -3 (fades in to 0, fully drawn), a3 sets 1 (fades out).
+		 * DrawHeroAnim moves up by one per drawn frame at alpha |step|; 4 and up is not drawn and
+		 * stops there. 93 sets -3 (0 on a black screen) when the hero is not fully shown, a3 sets 1
+		 * (4 on a black screen) when it is not already fading out. Returns 4 when the step was set,
+		 * else 0.
 		 */
-		void heroVisible(boolean visible, int x, int y, int dir);
+		int heroVisible(boolean visible, int x, int y, int dir);
 
-		/** b3: hero direction and action. */
-		void heroAct(int dir, int act);
+		/** b3: hero direction, action and its repeat byte (hero+0x45); returns 0, or 3 / 4 (acts 0xc..0xf). */
+		int heroAct(int dir, int act, int repeat);
 
-		/** e3: walk the hero next to a unit, on side d. */
+		/**
+		 * e3: walk the hero next to a unit, g_aDirX / g_aDirY[side] (0xb9848 / 0xb9854) cells away;
+		 * nothing when the unit is gone.
+		 */
 		void heroToUnit(int unit, int side);
 
 		/** 03: LoadMonsToTemp; returns the frames to wait. */
 		int unitSpawn(int a, int b, int c, int d);
 
-		/** 13..63: unit commands by hi nibble; returns frames to wait, or -1 when the unit is gone. */
+		/**
+		 * 13..63: unit commands by hi nibble; returns the frames to wait, 0 when the unit is gone.
+		 * 43 / 53 return 4 only when the unit's fade actually changes.
+		 */
 		int unit(int hi, int id, int x, int y, int dir);
+
+		/** True when unit uid is on the map (GetPhaseMons finds it). */
+		boolean unitExists(int uid);
 
 		/** c3 / d3: hide or show map object obj. */
 		void mapObject(int obj, boolean visible);
 
-		/** True while a scripted walk is still going (hero or units). */
+		/**
+		 * CalcPhase result 5's busy test: the camera still scrolls, the hero walks or plays a b3
+		 * action, or a unit has a scripted walk or action lock.
+		 */
 		boolean moving();
 
-		/** The skip mode's shortcut: every scripted walk arrives at once. */
+		/**
+		 * CalcPhase result 5 on a black screen: units on a scripted walk land on their target cell,
+		 * the hero's walk lands, and the units' and hero's script motion bits clear.
+		 */
 		void arriveAll();
+
+		/** ProcGame once more: the fast modes' extra tick in result 5 (camera, hero action, units). */
+		void extraTick();
+
+		/** wawamain+0x2ec0: DrawFade's signed step (-9..8); 8 and up is a fully black screen. */
+		int fadeLevel();
+
+		/** ExitPhase when no phase takes over: a black screen (8+) fades in from -7, 1..7 from 1 - v. */
+		void fadeRestore();
 
 		/** 14: LoadGameMap. */
 		void moveMap(String code);
@@ -168,6 +194,11 @@ final class EventRunner {
 		return !stack.isEmpty();
 	}
 
+	/** Whether {@link #draw} has anything to show: DrawPhase, or the headline once no phase runs. */
+	boolean overlay() {
+		return active() || talk.headlineShown();
+	}
+
 	/** LoadGameMap with a non-zero mode: the map's events reload and their status returns to 0. */
 	void loadMap(EventScript.Table t) {
 		local = t;
@@ -202,9 +233,9 @@ final class EventRunner {
 
 	// ---- triggers --------------------------------------------------------------------------
 
-	/** SearchPhase: true when a phase started and is still running. */
+	/** SearchPhase: true when a phase started and is still running, or the search is skipped (HP 0). */
 	boolean searchPhase() {
-		if (active()) {
+		if (active() || w.heroInt(3) <= 0) {
 			return true;
 		}
 		mode = 0;
@@ -325,7 +356,7 @@ final class EventRunner {
 	private void exitPhase(Entry e, int r) {
 		stack.remove(e);
 		int t = e.t.type(e.idx);
-		if (e.type == LOCAL && t == 2 && r == 1 && stack.isEmpty()) {
+		if (e.type == LOCAL && t == 2 && r == 1 && stack.isEmpty() && !reloadAfter) {
 			initPhaseZero();
 			// ExitPhase always reads the exit at +1, even for shared headers.
 			w.notPorted("맵 출구 이동(" + (e.t.d[e.t.offs[e.idx] + 1] & 0xff) + ")");
@@ -350,12 +381,18 @@ final class EventRunner {
 			// Opcode 14 loaded the map with mode 0; ExitPhase reloads it with mode 2 now.
 			reloadAfter = false;
 			w.reloadEvents();
+			searchPhase();
+		} else if (!searchPhase()) {
+			// No phase took over: the screen comes back from whatever fade the phase left.
+			w.fadeRestore();
 		}
-		searchPhase();
 	}
 
 	/** wawamain+0x5f49: the map moved under a running phase. */
 	private boolean reloadAfter;
+
+	/** gmenu+0xe8 / +0xf3 / +0xfe: the choice button labels NextPhaseCondition 2..4 writes. */
+	private byte[][] labels = new byte[3][];
 
 	/** InitPhaseZero: control returns to the player. */
 	private void initPhaseZero() {
@@ -485,6 +522,9 @@ final class EventRunner {
 					} else if (hi == 2) {
 						w.heroStop();
 						w.notPorted("GMenu 100(" + id + ")");
+						// GMenuFuncUp(100) leaves through the opcode-x2 exit: next line, end of frame.
+						e.pc++;
+						return 0;
 					} else if (hi == 3) {
 						// The finish only acts on a quest in the hero's seven slots; the port has no
 						// quests, so the slot search finds none and the line passes like the original's.
@@ -530,8 +570,16 @@ final class EventRunner {
 				}
 				case 8 -> {
 					w.heroStop();
-					cameraCommand(hi, d, a);
-					if (hi != 3 && hi != 4) {
+					int h = hi;
+					if (w.fadeLevel() > 7 || mode != 0) {
+						// Black screen or a fast mode: scrolls become jumps (28 -> 18, 58/68 -> 38/48).
+						if (h == 2) {
+							h = 1;
+						} else if (h > 4) {
+							h -= 2;
+						}
+					}
+					if (cameraCommand(h, d, a)) {
 						result = 5;
 					}
 				}
@@ -549,7 +597,8 @@ final class EventRunner {
 						e.pc++;
 						return 6;
 					}
-					w.notPorted("헤드라인");
+					// AddHeadline; the strip shows once the phase stack is empty.
+					talk.headline(d, a + 1, len);
 				}
 				case 0xb -> {
 					if (hi == 8) {
@@ -576,8 +625,21 @@ final class EventRunner {
 					advance = false;
 					e.pc = pc;
 					if (hi == 3) {
-						w.notPorted("선택지");
-						return 3;
+						// CalcPhaseCondition 3 builds the dd button labels after the prompt; the phase
+						// then waits for a pick (KeyPressPhaseSwitch), fast mode off, keys locked 4 frames.
+						labels = new byte[3][];
+						for (int m = 2; m <= 4; m++) {
+							nextCondition(e, e.pc, m);
+						}
+						int n = labels[1] == null ? 1 : labels[2] == null ? 2 : 3;
+						byte[][] shown = new byte[n][];
+						for (int i = 0; i < n; i++) {
+							shown[i] = labels[i] == null ? new byte[0] : labels[i];
+						}
+						talk.startChoice(d, a, shown);
+						mode = 0;
+						shared = 4;
+						return 8;
 					}
 				}
 				case 0xe -> {
@@ -628,21 +690,19 @@ final class EventRunner {
 				return 0;
 			case 9:
 				w.heroStop();
-				w.heroVisible(true, d[a] & 0xff, d[a + 1] & 0xff, d[a + 2] & 0xff);
-				return 4;
+				return w.heroVisible(true, d[a] & 0xff, d[a + 1] & 0xff, d[a + 2] & 0xff);
 			case 0xa:
-				w.heroVisible(false, 0xff, 0xff, 8);
-				return 4;
+				w.heroStop();
+				return w.heroVisible(false, 0xff, 0xff, 8);
 			case 0xb:
 				w.heroStop();
-				w.heroAct(d[a] & 0xff, d[a + 1] & 0xff);
-				return 0;
+				return w.heroAct(d[a] & 0xff, d[a + 1] & 0xff, d[a + 2] & 0xff);
 			case 0xc, 0xd:
 				w.mapObject(d[a] & 0xff, hi == 0xd);
 				return 0;
 			case 0xe: {
+				// e3 alone does not call SetPhaseHeroStop.
 				int[] id = unitId(d, a);
-				w.heroStop();
 				w.heroToUnit(id[0], d[a + id[1]] & 0xff);
 				return 0;
 			}
@@ -664,6 +724,10 @@ final class EventRunner {
 				w.notPorted("화면 줌");
 				return 0;
 			case 3: {
+				// A black screen skips the emote and its wait.
+				if (w.fadeLevel() >= 8) {
+					return 0;
+				}
 				w.heroStop();
 				if ((d[a] & 0xff) == 0xfe) {
 					w.emote(HERO, d[a + 1] & 0xff);
@@ -695,16 +759,29 @@ final class EventRunner {
 		}
 	}
 
-	/** Opcode lo 8: camera follow, move, look at. */
-	private void cameraCommand(int hi, byte[] d, int a) {
-		if (hi == 1 || hi == 2) {
-			w.camera(0x10 + hi, d[a] & 0xff, d[a + 1] & 0xff, 0);
-		} else if (hi >= 3 && hi <= 6) {
-			int target = (d[a] & 0xff) == 0xfe ? HERO : unitId(d, a)[0];
-			w.camera(0x10 + hi, 0, 0, target);
-		} else if (hi == 0) {
+	/**
+	 * Opcode lo 8 (after the black-screen remap): stop, jump/scroll to a cell, follow the hero or a
+	 * unit. True when result 5 waits for it: 08, 18, 28, and 58/68 that found their target.
+	 */
+	private boolean cameraCommand(int hi, byte[] d, int a) {
+		if (hi == 0) {
 			w.camera(0x10, 0, 0, 0);
+			return true;
 		}
+		if (hi <= 2) {
+			w.camera(0x10 + hi, d[a] & 0xff, d[a + 1] & 0xff, 0);
+			return true;
+		}
+		if (hi > 6) {
+			return false;
+		}
+		int target = (d[a] & 0xff) == 0xfe ? HERO : unitId(d, a)[0];
+		if (target != HERO && !w.unitExists(target)) {
+			// GetPhaseMons found nothing: the camera stays as it is.
+			return false;
+		}
+		w.camera(0x10 + hi, 0, 0, target);
+		return hi >= 5;
 	}
 
 	/** AnalysisPhaseItem: 07 take, 17 give (3 when the hero cannot take it). */
@@ -756,20 +833,41 @@ final class EventRunner {
 					talk.clear();
 				}
 				case 5 -> {
-					if (mode == 2) {
+					if (w.fadeLevel() >= 8) {
+						// Black screen: scripted moves land at once; only the shared counter is waited.
 						w.arriveAll();
-					}
-					shared--;
-					e.timer--;
-					if (!(e.timer < 0 && shared < 0 && !w.moving())) {
-						return;
+						if (--shared >= 0) {
+							return;
+						}
+					} else {
+						shared--;
+						e.timer--;
+						if (busy(e)) {
+							if (mode == 0) {
+								return;
+							}
+							// The fast modes run ProcGame once more and count the frame twice.
+							w.extraTick();
+							shared--;
+							e.timer--;
+							if (busy(e)) {
+								return;
+							}
+						}
 					}
 				}
 				case 3 -> {
 					abortAll();
 					return;
 				}
-				case 7, 8 -> {
+				case 7 -> {
+					return;
+				}
+				case 8 -> {
+					// The choice keys wait for the shared counter to run out.
+					if (shared != 0) {
+						shared--;
+					}
 					return;
 				}
 				default -> {
@@ -783,10 +881,8 @@ final class EventRunner {
 			if (r == 1 || r == 2) {
 				exitPhase(e, r);
 				k = i;
-			} else if (r == 3) {
-				abortAll();
-				return;
 			} else {
+				// Result 3 is only stored here; the next frame's case 3 closes the stack.
 				if (i >= stack.size() - 1) {
 					return;
 				}
@@ -795,10 +891,17 @@ final class EventRunner {
 		}
 	}
 
-	/** The DrawPhase half that moves the text box state. */
+	/** Result 5's wait: the entry's timer, the shared counter or a scripted move still runs. */
+	private boolean busy(Entry e) {
+		return e.timer >= 0 || shared >= 0 || w.moving();
+	}
+
+	/** The DrawPhase half that moves the text box state; with no phase, DrawHeadline's timer. */
 	void frame() {
 		if (active()) {
 			talk.frame(mode, w.heroName(), w.npcName(), emotes);
+		} else {
+			talk.headlineFrame();
 		}
 	}
 
@@ -808,27 +911,51 @@ final class EventRunner {
 			return false;
 		}
 		Entry e = stack.get(stack.size() - 1);
+		// Results 7 and 8 take only their own keys; '#' never reaches them.
+		if (e.result == 7) {
+			if (talk.key(code, mode, w.heroName(), w.npcName(), emotes)) {
+				talk.clear();
+				e.result = 0;
+			}
+			return true;
+		}
+		if (e.result == 8) {
+			int pick = talk.choose(code, shared == 0);
+			if (pick >= 0) {
+				// KeyPressPhaseSwitch: continue at the picked choice's dd line.
+				e.pc = nextCondition(e, e.pc, pick + 2);
+				e.result = 0;
+				talk.clear();
+			}
+			return true;
+		}
 		if (code == KeyEvent.VK_NUMBER_SIGN || code == KeyEvent.VK_F) {
 			if (!noSkip) {
-				if (e.result == 6 && mode == 0) {
-					talk.skipCaption();
+				if (mode == 0) {
+					mode = 1;
+					if (e.result == 6) {
+						talk.skipCaption();
+					} else if (e.result == 4) {
+						// SetTalkState(state == 6 ? 0 : 1), as OK does.
+						talk.key(KeyEvent.VK_ENTER, mode, w.heroName(), w.npcName(), emotes);
+					}
+				} else if (mode == 1) {
+					mode = 0;
 				}
-				mode = mode == 0 ? 1 : mode == 1 ? 0 : mode;
 			}
 			return true;
 		}
 		if (e.result == 4 || e.result == 6) {
 			talk.key(code, mode, w.heroName(), w.npcName(), emotes);
-		} else if (e.result == 7 && talk.key(code, mode, w.heroName(), w.npcName(), emotes)) {
-			talk.clear();
-			e.result = 0;
 		}
 		return true;
 	}
 
-	/** DrawPhase on the 480x320 overlay: letterbox bars, then the text box. */
+	/** DrawPhase on the 480x320 overlay (letterbox bars, then the text box), or the headline. */
 	void draw(Graphics2D g) {
 		if (!active()) {
+			// DrawGamePlay calls DrawHeadline only while no phase runs.
+			talk.drawHeadline(g);
 			return;
 		}
 		g.setColor(Color.BLACK);
@@ -858,14 +985,24 @@ final class EventRunner {
 		};
 	}
 
-	/** NextPhaseCondition: walk to the matching ELSE / ENDIF / loop line. */
+	/**
+	 * NextPhaseCondition: walk to the matching ELSE / ENDIF / loop line, or for m 2..4 to choice
+	 * m - 1's dd line (writing its "%d.%.*s" button label) or past the choice end.
+	 */
 	private int nextCondition(Entry e, int pc, int m) {
 		byte[] d = e.t.d;
 		int a = 0;
 		int b = 0;
 		int c = 0;
+		boolean first = true;
 		while (true) {
-			pc += m == 5 ? -1 : 1;
+			if (m != 2) {
+				pc += m == 5 ? -1 : 1;
+			} else if (!first) {
+				// m 2 never steps: the line after 3d must be choice 1, or the original spins forever.
+				return e.lines.length;
+			}
+			first = false;
 			if (pc < 0 || pc >= e.lines.length) {
 				return e.lines.length;
 			}
@@ -905,6 +1042,17 @@ final class EventRunner {
 						}
 					} else {
 						a--;
+					}
+				}
+				case 0xd -> {
+					if (c == 0 && m >= 2 && m <= 4 && (d[args] & 0xff) + 1 == m) {
+						int len = d[args + 1] & 0xff;
+						byte[] label = new byte[len + 2];
+						label[0] = (byte) ('0' + m - 1);
+						label[1] = '.';
+						System.arraycopy(d, args + 2, label, 2, len);
+						labels[m - 2] = label;
+						return pc;
 					}
 				}
 				case 0xb -> {

@@ -37,8 +37,8 @@ Screenshots and measurements in these notes come from running the original in an
   follows InitHero / InitHeroState / InitHeroLevelUp (`Hero`, `Combat`). The hero holds item 297, the
   first weapon the t02 event script equips on a new game, because map exits are not ported and t02
   cannot be reached yet; there is no inventory, armour or equip screen.
-- **Event script gaps.** Quests, buffs, sound, zoom, choices, the GOrder/GMenu screens, map exit,
-  area and object triggers, and hero actions (`b3`) are not ported; a script that reaches one logs
+- **Event script gaps.** Quests, buffs, sound, zoom, the GOrder/GMenu screens, map exit, area
+  and object triggers, and effect/attack actions are not ported; a script that reaches one logs
   `[미포팅]` and carries on as `docs/FORMATS.md` §10 lists.
 - **Animation playback.** Poses for any state and step are composed (`MonsterAnim.pose`,
   `HeroAnim.pose`); monsters only draw state 0, step 0, and the hero only its stand, walk and sit

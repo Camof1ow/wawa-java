@@ -128,7 +128,7 @@ final class PartSprites {
 		int at = 6;
 		int[][] chain = new int[countA][];
 		for (int i = 0; i < countA; i++, at += 6) {
-			chain[i] = new int[] {(short) u16(b, at), u16(b, at + 2), b[at + 4] & 0xff};
+			chain[i] = new int[] {(short) u16(b, at), u16(b, at + 2), b[at + 4] & 0xff, b[at + 5] & 0xff};
 		}
 		int[] refs = new int[countB];
 		for (int i = 0; i < countB; i++, at += 2) {

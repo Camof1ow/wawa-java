@@ -216,6 +216,12 @@ final class SlotScreen {
 		}
 	}
 
+	/**
+	 * InitGOrder case 7 fills the name edit box with "크리스노아" (0xd3cfc; "Chris Noah" at
+	 * 0xd3d08 when m_langID is not Korean).
+	 */
+	private static final int DEFAULT_NAME = 0xd3cfc;
+
 	/** LoadSlot on a filled slot continues it; on an empty one GOrderFuncUp(7) opens the new-game panel. */
 	private Action open() {
 		if (slots[slot] != null) {
@@ -224,7 +230,7 @@ final class SlotScreen {
 		phase = Phase.NEW_GAME;
 		row = 0;
 		heroClass = 0;
-		name = "";
+		name = elf.cstring(DEFAULT_NAME, KOREAN);
 		return null;
 	}
 

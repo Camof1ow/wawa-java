@@ -7,10 +7,12 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * The hero's drawn pose, as CalcHeroAnim / DrawHeroAnim build it for the stand (act 0) and sit
- * (act 0x26) actions; attacks, skills and riding are not ported. Ported from the WIPI build, whose
- * CalcHeroAnim decompiles without the jump tables that hide the Android one.
+ * The hero's drawn pose, as CalcHeroAnim / DrawHeroAnim build it from actPart (acts below 0x26),
+ * the direct ani indices of acts 0x26..0x2b, and act 0x1d, which plays act 4 backwards (getting up).
+ * Attack timing (GetHeroAttackFrame), skills and riding are not ported. Ported from the WIPI build,
+ * whose CalcHeroAnim decompiles without the jump tables that hide the Android one.
  *
+ * <p>A step shows its first A record's delay byte + 1 frames (CalcHeroAnim, fp 2d64a 284-299).
  * <pre>
  * body       dat/20.dat (3135 frames), the chain of ani_hero[a].base + step   like a monster
  * ani_hero   0xc2144   493 x {s16 layerBase, s16 base, s16 steps}
@@ -34,9 +36,13 @@ import java.util.List;
 final class HeroAnim {
 
 	static final int ACT_STAND = 0;
+	static final int ACT_WALK = 1;
+	static final int ACT_FALL = 4;
+	/** Getting up: act 4's rows played from the last step back to the first. */
+	static final int ACT_RISE = 0x1d;
 	static final int ACT_SIT = 0x26;
-	/** CalcHeroAnim's ani index for the sit action. */
-	private static final int SIT_ANI = 0x16;
+	/** CalcHeroAnim's ani index for acts 0x26..0x2b; they draw no equipment but 0x26's armour. */
+	private static final int[] DIRECT_ANI = { 0x16, 0x1a, 0x18, 0x19, 0x17, 0x1b };
 
 	private static final int BODY_DAT = 20;
 	private static final int ANI = 0xc2144;
@@ -108,27 +114,60 @@ final class HeroAnim {
 		return sprites.compose(parts(look, step), mirrored(look));
 	}
 
-	private static boolean mirrored(Look look) {
-		return look.act() != 2 && look.act() != 4 && (look.dir() & 3) == 3
-				|| (look.act() == 2 || look.act() == 4) && (look.dir() & 2) != 0;
+	/** Steps in one cycle of the look's act. */
+	int steps(Look look) {
+		return Math.max(1, elf.s16(ANI + ani(look) * 6 + 4));
 	}
 
-	/** The direction row of actPart: 0..2, with 3 drawn as 2 mirrored; acts 2 and 4 only have two. */
+	/** Frames step {@code step} holds beyond its first. */
+	int delay(Look look, int step) throws IOException {
+		int frame = elf.s16(ANI + ani(look) * 6 + 2) + shown(look, step);
+		PartSprites.Dat dat = sprites.dat(BODY_DAT);
+		return frame < 0 || frame >= dat.chain().length ? 0 : dat.chain()[frame][3];
+	}
+
+	/** Acts 2, 4 and 0x1d have two direction rows: row dir &amp; 1, mirrored by dir &amp; 2. */
+	private static boolean twoRows(int act) {
+		return act == 2 || act == ACT_FALL || act == ACT_RISE;
+	}
+
+	private static boolean mirrored(Look look) {
+		return twoRows(look.act()) ? (look.dir() & 2) != 0 : (look.dir() & 3) == 3;
+	}
+
+	/** The direction row of actPart: 0..2, with 3 drawn as 2 mirrored. */
 	private static int dirRow(Look look) {
-		if (look.act() == 2 || look.act() == 4) {
+		if (twoRows(look.act())) {
 			return look.dir() & 1;
 		}
 		return (look.dir() & 3) == 3 ? 2 : look.dir() & 3;
 	}
 
+	/** The actPart row CalcHeroAnim reads: act 0x1d borrows act 4's. */
+	private int partRow(Look look) {
+		int act = look.act() == ACT_RISE ? ACT_FALL : look.act();
+		return ACT_PART + act * 0x54 + dirRow(look) * 0x1c + look.kind() * 7;
+	}
+
+	private int ani(Look look) {
+		int act = look.act();
+		return act >= ACT_SIT && act < ACT_SIT + DIRECT_ANI.length ? DIRECT_ANI[act - ACT_SIT] : elf.s8(partRow(look));
+	}
+
+	/** The ani step drawn for cycle position {@code step}; act 0x1d runs backwards. */
+	private int shown(Look look, int step) {
+		int n = steps(look);
+		int s = Math.floorMod(step, n);
+		return look.act() == ACT_RISE ? n - 1 - s : s;
+	}
+
 	List<PartSprites.Part> parts(Look look, int step) throws IOException {
 		PartSprites.Dat dat = sprites.dat(BODY_DAT);
 		int act = look.act();
-		int partRow = ACT_PART + act * 0x54 + dirRow(look) * 0x1c + look.kind() * 7;
-		int ani = act == ACT_SIT ? SIT_ANI : elf.s8(partRow);
+		int partRow = partRow(look);
+		int ani = ani(look);
 		int layerBase = elf.s16(ANI + ani * 6);
-		int steps = Math.max(1, elf.s16(ANI + ani * 6 + 4));
-		int s = Math.floorMod(step, steps);
+		int s = shown(look, step);
 		int frame = elf.s16(ANI + ani * 6 + 2) + s;
 
 		List<int[]> body = MonsterAnim.chainParts(dat, frame, true);
@@ -153,6 +192,9 @@ final class HeroAnim {
 					continue;
 				}
 				offset = layer - 2;
+			} else if (act > ACT_SIT) {
+				// fp 2d64a 677-681: layers only below 0x26 or for 0x26 itself.
+				continue;
 			} else {
 				offset = elf.s8(partRow + layer + 1);
 				if (offset < 0) {
