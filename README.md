@@ -48,9 +48,9 @@ Screenshots and measurements in these notes come from running the original in an
 ## Requirements
 
 - JDK 17 or newer (the port uses records and switch expressions; the browser build targets 17).
-- The original `wild.apk`, which is **not** redistributed here. `wawa.Game` reads it in place
-  (assets and `lib/armeabi/libwawa.so`); the tools take an extracted `assets/` directory, with
-  `lib/armeabi/libwawa.so` next to it.
+- The original `wild.apk`: a copy sits in `web/wild.apk` for the browser build. `wawa.Game` reads
+  it in place (assets and `lib/armeabi/libwawa.so`); the tools take an extracted `assets/`
+  directory, with `lib/armeabi/libwawa.so` next to it.
 
 ## Build and run
 
@@ -58,7 +58,7 @@ Screenshots and measurements in these notes come from running the original in an
 javac -d out $(find src -name '*.java')
 
 # playable slice, straight from the APK or from an extracted assets/ directory
-java -cp out wawa.Game wild.apk
+java -cp out wawa.Game web/wild.apk
 
 # load every shipped map, area and monster table and report what came back
 java -cp out wawa.CheckMapsRun <path-to-assets>
@@ -74,12 +74,12 @@ so the render can be checked without a GUI.
 
 ## Play in the browser
 
-GitHub Pages serves `web/index.html` with `wawa.jar` (`.github/workflows/pages.yml` builds both on
-every push to `main`). The page runs the jar in CheerpJ 4.3 (Java 17, Community Edition: personal
-and non-business use only) and asks for your own `wild.apk`: it stays in the browser and is handed
-to Java as one in-memory file. Saves go to the browser's `/files/` store. To try it locally, serve
-a folder holding `index.html` and `wawa.jar` with a server that answers `Range` requests (CheerpJ
-needs them), e.g. `npx http-server`.
+GitHub Pages serves `web/index.html`, `web/wild.apk` and `wawa.jar` (`.github/workflows/pages.yml`
+builds the jar on every push to `main`). The page starts the jar in CheerpJ 4.3 (Java 17, Community
+Edition: personal and non-business use only), and Java opens the APK in place over HTTP range
+reads. Saves go to the browser's `/files/` store. To try it locally, serve a folder holding those
+three files with a server that answers `Range` requests (CheerpJ needs them), e.g.
+`npx http-server`.
 
 ## Layout
 

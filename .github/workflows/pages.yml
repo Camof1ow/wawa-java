@@ -29,7 +29,7 @@ jobs:
           javac --release 17 -encoding UTF-8 -d build/classes $(find src -name '*.java')
           mkdir -p build/site
           jar --create --file build/site/wawa.jar --main-class wawa.Game -C build/classes .
-          cp web/index.html build/site/
+          cp web/index.html web/wild.apk build/site/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
