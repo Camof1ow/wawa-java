@@ -5,3 +5,9 @@ wawa-save.properties
 # The original APK's assets are not redistributed; point the tools at your own extraction.
 assets/
 extract/
+
+# Gradle (browser build)
+.gradle/
+build/
+web/wawa.js
+web/GalmuriMono11.ttf

@@ -1,0 +1,47 @@
+name: 웹 빌드·Pages 배포
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      # TeaVM translates wawa.WebMain and what it reaches to build/generated/teavm/js/wawa.js.
+      - name: wawa.js
+        run: |
+          sh ./gradlew generateJavaScript
+          mkdir -p build/site
+          cp build/generated/teavm/js/wawa.js web/index.html web/wild.apk build/site/
+          cp src/main/resources/wawa/GalmuriMono11.ttf src/main/resources/wawa/Galmuri-LICENSE.txt build/site/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

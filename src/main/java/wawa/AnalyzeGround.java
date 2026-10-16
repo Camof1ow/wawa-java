@@ -121,7 +121,7 @@ public final class AnalyzeGround {
 			i++;
 		}
 		g.dispose();
-		Files.write(out.resolve("blocks.png"), Png.of(sheet));
+		Files.write(out.resolve("blocks.png"), Awt.png(sheet));
 		System.out.println("wrote " + out.resolve("blocks.png"));
 	}
 

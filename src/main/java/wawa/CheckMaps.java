@@ -11,6 +11,7 @@ public final class CheckMaps {
 
 	public static void main(String[] args) throws Exception {
 		Path root = Path.of(args.length > 0 ? args[0] : "assets/eng");
+		DirAssets apk = new DirAssets(root.toAbsolutePath().getParent());
 		List<Path> files = new ArrayList<>();
 		try (Stream<Path> s = Files.walk(root)) {
 			s.filter(p -> p.toString().endsWith(".png")).sorted().forEach(files::add);
@@ -20,7 +21,7 @@ public final class CheckMaps {
 		for (Path p : files) {
 			String code = codeFor(p);
 			try {
-				MapData m = MapData.load(p, code);
+				MapData m = MapData.load(apk, apk.path(p), code);
 				StringBuilder tiles = new StringBuilder();
 				for (int i = 0; i < 4; i++) {
 					tiles.append(m.tileSet(i)).append(' ');

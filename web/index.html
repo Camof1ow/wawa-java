@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>와일드 프론티어 Java 포트</title>
+<style>
+  /* The game's text font (SIL OFL 1.1, Galmuri-LICENSE.txt). */
+  @font-face { font-family: GalmuriMono11; src: url(GalmuriMono11.ttf) format("truetype"); }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; color: #ddd; font-family: sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; }
+  #bar { align-self: stretch; margin: 4px 8px; height: 18px; font-size: 13px; color: #fc6; white-space: nowrap; overflow: hidden; }
+  #bar a { color: #9cf; float: right; }
+  /* 416x312 is 4:3; the canvas grows to the largest 4:3 box under the status line. */
+  #screen {
+    width: min(100vw, calc((100vh - 26px) * 4 / 3));
+    aspect-ratio: 4 / 3;
+    image-rendering: pixelated;
+  }
+  /* Holds keyboard focus so input methods compose here; invisible, over the canvas's top-left. */
+  #ime { position: absolute; left: 0; top: 26px; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; }
+</style>
+<script src="wawa.js"></script>
+</head>
+<body onload="document.fonts.load('16px GalmuriMono11').catch(() => {}).then(() => main())">
+<div id="bar"><span id="status">불러오는 중…</span><a href="https://github.com/Camof1ow/wawa-java">소스</a></div>
+<canvas id="screen" width="416" height="312"></canvas>
+<input id="ime" type="text" autocomplete="off" aria-label="키보드 입력">
+</body>
+</html>

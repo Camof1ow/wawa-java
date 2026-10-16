@@ -28,9 +28,11 @@ import java.util.stream.Stream;
 public final class ExtractAll {
 
 	private static final List<String> index = new ArrayList<>();
+	private static DirAssets apk;
 
 	public static void main(String[] args) throws Exception {
 		Path assets = Path.of(args.length > 0 ? args[0] : "assets");
+		apk = new DirAssets(assets);
 		Path out = Path.of(args.length > 1 ? args[1] : "out/extract");
 		Files.createDirectories(out);
 
@@ -52,7 +54,7 @@ public final class ExtractAll {
 			for (Path p : s.sorted().toList()) {
 				Gsac g;
 				try {
-					g = Gsac.loadCompanion(p);
+					g = Gsac.loadCompanion(apk, apk.path(p));
 				} catch (IOException e) {
 					index.add("img SKIP " + p.getFileName() + " (" + e.getMessage() + ")");
 					continue;
@@ -60,7 +62,7 @@ public final class ExtractAll {
 				if (!g.fullyDecodable() || g.frameCount() == 0) {
 					if (g.isRawImage() && g.rawWidth() > 0 && g.rawHeight() > 0) {
 						String name = p.getFileName().toString().replace(".png", "");
-						Files.write(out.resolve(name + ".png"), Png.of(g.rawImage(g.rawWidth())));
+						Files.write(out.resolve(name + ".png"), Awt.png(g.rawImage(g.rawWidth())));
 						index.add("img " + name + " RAW " + g.rawWidth() + "x" + g.rawHeight());
 						sheets++;
 					} else {
@@ -69,7 +71,7 @@ public final class ExtractAll {
 					continue;
 				}
 				String name = p.getFileName().toString().replace(".png", "");
-				Files.write(out.resolve(name + ".png"), Png.of(sheet(g)));
+				Files.write(out.resolve(name + ".png"), Awt.png(sheet(g)));
 				index.add("img " + name + " frames=" + g.frameCount() + " mode=" + g.mode());
 				sheets++;
 				frames += g.frameCount();
@@ -92,7 +94,7 @@ public final class ExtractAll {
 		g2.setColor(new Color(36, 36, 44));
 		g2.fillRect(0, 0, out.getWidth(), out.getHeight());
 		for (int i = 0; i < g.frameCount(); i++) {
-			BufferedImage f = g.frame(i);
+			BufferedImage f = Awt.toBuffered(g.frame(i));
 			g2.drawImage(f, (i % cols) * cw, (i / cols) * ch, null);
 		}
 		g2.dispose();
@@ -106,7 +108,7 @@ public final class ExtractAll {
 				String letter = p.getFileName().toString().replace(".png", "");
 				String code = letter + "01";
 				try {
-					MapData m = MapData.load(p, code);
+					MapData m = MapData.load(apk, apk.path(p), code);
 					StringBuilder sb = new StringBuilder("{\n  \"code\": \"" + code + "\",\n");
 					sb.append("  \"width\": ").append(m.width).append(",\n");
 					sb.append("  \"height\": ").append(m.height).append(",\n");
@@ -124,8 +126,8 @@ public final class ExtractAll {
 					}
 					sb.append("  ]\n}\n");
 					Files.writeString(out.resolve(code + ".json"), sb.toString());
-					Tiles t = Tiles.load(assets, m);
-					Files.write(out.resolve(code + ".png"), Png.of(renderMap(m, t)));
+					Tiles t = Tiles.load(apk, m);
+					Files.write(out.resolve(code + ".png"), Awt.png(renderMap(m, t)));
 					index.add("map " + code + " " + m.width + "x" + m.height + " tileSets=["
 							+ m.tileSet(0) + "," + m.tileSet(1) + "," + m.tileSet(2) + "," + m.tileSet(3) + "]");
 				} catch (IOException e) {
@@ -143,9 +145,9 @@ public final class ExtractAll {
 		g.fillRect(0, 0, img.getWidth(), img.getHeight());
 		for (int y = 0; y < m.height; y++) {
 			for (int x = 0; x < m.width; x++) {
-				BufferedImage f = t.patch(m.layer(x, y), m.cell(x, y));
+				Img f = t.patch(m.layer(x, y), m.cell(x, y));
 				if (f != null) {
-					g.drawImage(f, x * 16, y * 16, 16, 16, null);
+					g.drawImage(Awt.toBuffered(f), x * 16, y * 16, 16, 16, null);
 				}
 			}
 		}
@@ -159,7 +161,7 @@ public final class ExtractAll {
 		try (Stream<Path> s = Files.list(dir)) {
 			for (Path p : s.sorted().toList()) {
 				try {
-					DataTables t = DataTables.load(p);
+					DataTables t = DataTables.load(apk, apk.path(p));
 					StringBuilder sb = new StringBuilder("{\n  \"declared\": " + t.declared + ",\n  \"records\": [\n");
 					for (int i = 0; i < t.size(); i++) {
 						int[] row = t.records.get(i);
@@ -188,7 +190,7 @@ public final class ExtractAll {
 				String letter = p.getFileName().toString().replace(".png", "");
 				AreaInfo a;
 				try {
-					a = AreaInfo.load(p, letter + "01");
+					a = AreaInfo.load(apk, apk.path(p), letter + "01");
 				} catch (IOException e) {
 					a = AreaInfo.absent(letter + "01");
 				}
@@ -230,7 +232,7 @@ public final class ExtractAll {
 				}
 				String name = p.getFileName().toString().replace(".h", "");
 				Files.write(out.resolve(name + ".bin"), data);
-				Files.write(out.resolve(name + ".png"), Png.of(fontGuess(data, name)));
+				Files.write(out.resolve(name + ".png"), Awt.png(fontGuess(data, name)));
 				index.add("font " + name + " bytes=" + data.length);
 			}
 		}

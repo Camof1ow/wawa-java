@@ -1,7 +1,6 @@
 package wawa;
 
 import java.io.IOException;
-import java.nio.file.Path;
 
 /**
  * Map data files from assets/eng/*&#47;*.png, decoded exactly as ReadMapFile + LoadGameMap do.
@@ -75,8 +74,8 @@ public final class MapData {
 	 * Reads one map file and picks the language variant named by the last two characters
 	 * of the 3-character code, e.g. "a01" selects the blob with id "01".
 	 */
-	public static MapData load(Path file, String code) throws IOException {
-		byte[] blob = ResourceFile.pick(file, code);
+	static MapData load(Assets assets, String file, String code) throws IOException {
+		byte[] blob = ResourceFile.pick(assets, file, code);
 		if (blob.length < 10) {
 			throw new IOException("payload too small in " + file);
 		}
@@ -93,6 +92,6 @@ public final class MapData {
 		}
 		byte[] cells = new byte[w * h];
 		System.arraycopy(blob, 10, cells, 0, w * h);
-		return new MapData(file.getFileName().toString(), layerTileSet, layerPalette, w, h, cells);
+		return new MapData(file.substring(file.lastIndexOf('/') + 1), layerTileSet, layerPalette, w, h, cells);
 	}
 }

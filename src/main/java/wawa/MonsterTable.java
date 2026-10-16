@@ -2,7 +2,6 @@ package wawa;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -66,9 +65,9 @@ public final class MonsterTable {
 		this.records = records;
 	}
 
-	public static MonsterTable load(Path file, String code, int mapWidth, int mapHeight)
+	static MonsterTable load(Assets assets, String file, String code, int mapWidth, int mapHeight)
 			throws IOException {
-		byte[] blob = ResourceFile.pick(file, code);
+		byte[] blob = ResourceFile.pick(assets, file, code);
 		if (blob.length < 9) {
 			throw new IOException("monster blob too small: " + file);
 		}

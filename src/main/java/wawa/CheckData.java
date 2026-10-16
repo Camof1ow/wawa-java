@@ -11,6 +11,7 @@ public final class CheckData {
 
 	public static void main(String[] args) throws Exception {
 		Path dir = Path.of(args.length > 0 ? args[0] : "assets/eng/dat");
+		DirAssets apk = new DirAssets(dir.toAbsolutePath().getParent().getParent());
 		List<Path> files = new ArrayList<>();
 		try (Stream<Path> s = Files.list(dir)) {
 			s.sorted().forEach(files::add);
@@ -18,7 +19,7 @@ public final class CheckData {
 		int ok = 0;
 		for (Path p : files) {
 			try {
-				DataTables t = DataTables.load(p);
+				DataTables t = DataTables.load(apk, apk.path(p));
 				ok++;
 				if (p.getFileName().toString().compareTo("08.png") <= 0) {
 					StringBuilder head = new StringBuilder();

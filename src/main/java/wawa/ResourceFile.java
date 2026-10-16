@@ -1,8 +1,6 @@
 package wawa;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 
 /**
  * The container every data file in this game is packed in, exactly as ReadMapFile decodes it:
@@ -21,11 +19,11 @@ import java.nio.file.Path;
 final class ResourceFile {
 
 	/** The payload the 3-character code selects, e.g. "a01" picks id "01". */
-	static byte[] pick(Path file, String code) throws IOException {
+	static byte[] pick(Assets assets, String file, String code) throws IOException {
 		if (code.length() < 3) {
 			throw new IOException("resource code must be 3 characters: " + code);
 		}
-		byte[] d = Files.readAllBytes(file);
+		byte[] d = assets.read(file);
 		if (d.length < 2) {
 			throw new IOException("truncated resource file: " + file);
 		}
@@ -60,6 +58,11 @@ final class ResourceFile {
 
 	static int u16(byte[] d, int off) {
 		return (d[off] & 0xFF) | ((d[off + 1] & 0xFF) << 8);
+	}
+
+	/** A plain PNG. */
+	static Img image(Assets assets, String path) throws IOException {
+		return Png.decode(assets.read(path));
 	}
 
 	private ResourceFile() {
