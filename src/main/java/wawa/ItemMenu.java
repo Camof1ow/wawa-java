@@ -15,42 +15,12 @@ import java.util.Random;
  * actions, crafting, quick slots, recipe tracking and the material menu's compress, decompress
  * and mutate report themselves as not ported.
  */
-final class ItemMenu {
+final class ItemMenu extends OrderScreen {
 
-	static final int W = 480;
-	static final int H = 320;
-
-	/** What the menu asks of the game. */
-	interface Host {
-		/** GMenu 0xcc or 0xce: a titled confirmation whose "O.확인" runs {@code onYes}. */
-		void confirm(byte[] title, byte[] text, Runnable onYes);
-
-		/** A GMenu message such as 0x38e, dismissed with OK. */
-		void message(byte[] text);
-
-		/** FuncUseItem(id, 1). */
-		void use(int id);
-
-		/** InitHeroState(1) after the worn gear changed. */
-		void changed();
-
-		void close();
-
-		void notPorted(String what);
-	}
-
-	/** g_anCursor: the s8 bob of arrows and the cursor, by frame. */
-	private static final int CURSOR_BOB = 0xb9868;
-	private static final int ITEM_ICON = 0xc99d0;
-	private static final int RECIPE_EQUIP = 0xb9870;
-	private static final int TEXT_COLOR = 0xe58f4;
-	private static final int EQUIP_GRADE = 0xe5dbc;
 	private static final int ACTION_LABEL = 0xe29ec;
 	private static final int MATERIAL_LABEL = 0xe2a2c;
-	private static final int MESSAGE = 0xe2684;
 	private static final int ATK_LABEL = 0xd3fd8;
 	private static final int DEF_LABEL = 0xd3fe0;
-	private static final int MONEY_LABEL = 0xd3c6c;
 	private static final int SET_1 = 0xd3fe8;
 	private static final int SET_2 = 0xd3fec;
 	private static final int USE_TEXT = 0xd2578;
@@ -58,22 +28,6 @@ final class ItemMenu {
 	private static final int DISCARD_EQUIP_TITLE = 0xd2504;
 	private static final int DISCARD_ITEM_TEXT = 0xd25d8;
 	private static final int DISCARD_EQUIP_TEXT = 0xd2600;
-	private static final int WEAPON_HAND = 0xe2924;
-	private static final int ARMOUR_KIND = 0xe2934;
-	private static final int ATTACK_FMT = 0xd7d50;
-	private static final int DEFENCE_FMT = 0xd7d90;
-	private static final int LIMIT_FMT = 0xd7ee0;
-	private static final int LIMIT_LEVEL_SHORT_FMT = 0xd7e50;
-	private static final int LIMIT_WORN_FMT = 0xd7e08;
-	private static final int MATERIAL_KIND = 0xd7ff8;
-	private static final int MATERIAL_USE = 0xe2984;
-	/** The weapon-type words after the hand: 검, 도끼, 둔기 by element. */
-	private static final int[] WEAPON_KIND = { 0xd7d08, 0xd7d0c, 0xd7d14 };
-	/** DrawGOrderIcon's background and tint per grade 1..4, then for any other grade (BBGGRR00). */
-	private static final int[] GRADE_BG = { 0x32574500, 0x502c0800, 0x4c1d3300, 0x0a0c8700, 0x435e7100 };
-	private static final int[] GRADE_TINT = { 0x009b8a00, 0xe67d1700, 0xff60ab00, 0x1e9aee00, 0x4493cb00 };
-	private static final int[] MATERIAL_BG = { 0x96969600, 0x51726200, 0x467a9f00, 0x8e5fa300 };
-	private static final int EDGE = 0x1a2a4300;
 
 	private static final int EQUIP = 1;
 	private static final int MAKE = 2;
@@ -84,19 +38,9 @@ final class ItemMenu {
 	private static final int INFO = 0x40;
 	private static final int DISCARD = 0x80;
 
-	private final ElfImage so;
-	private final Item items;
 	private final HeroAnim heroes;
-	private final Clix clix;
-	private final Gsac gorder;
-	private final Gsac imenu;
-	private final Gsac gameui;
-	private final Gsac[] icons = new Gsac[8];
-	private final int[] iconFirst = new int[9];
 	private final Random previewRand = new Random(0);
 
-	private Hero hero;
-	private Host host;
 	/** gorder+0x08: 0 the tab column, 1 the grid, 2 picking a bag item for a slot, 3 a slot for an item. */
 	private int focus;
 	/** gorder+0x14: the cursor is on the category bar. */
@@ -113,28 +57,11 @@ final class ItemMenu {
 	private int[] options;
 	private boolean materialMenu;
 	private int selected;
-	private int frames;
 	private int previewAct = HeroAnim.ACT_STAND;
-	/** gorder+0x54/+0x58: the arrow, easing toward the cursor cell's corner. */
-	private int arrowX = -1;
-	private int arrowY;
 
-	ItemMenu(Assets assets, ElfImage so, Item items, HeroAnim heroes) throws IOException {
-		this.so = so;
-		this.items = items;
+	ItemMenu(Sheets sheets, ElfImage so, Item items, HeroAnim heroes) {
+		super(sheets, so, items);
 		this.heroes = heroes;
-		this.clix = new Clix(so);
-		gorder = Gsac.loadCompanion(assets, "assets/img/gorder.png");
-		imenu = Gsac.loadCompanion(assets, "assets/img/imenu.png");
-		gameui = Gsac.loadCompanion(assets, "assets/img/gameui.png");
-		// LoadGOrderIcon: icon1..6 take the external palette g_anRecipeEquip numbers.
-		for (int k = 0; k < 8; k++) {
-			int pal = so.u8(RECIPE_EQUIP + k);
-			String file = "assets/img/icon" + k + ".png";
-			icons[k] = pal != 0 ? Gsac.loadWithPalette(assets, file, String.format("assets/pal/%03d.png", pal))
-					: Gsac.loadCompanion(assets, file);
-			iconFirst[k + 1] = iconFirst[k] + icons[k].frameCount();
-		}
 	}
 
 	/** GOrderFuncUp to ITEM: InitGOrder's ITEM state, the cursor on the category bar of tab 0. */
@@ -529,60 +456,15 @@ final class ItemMenu {
 		return 0;
 	}
 
-	private void message(int id) {
-		host.message(so.cbytes(so.u32(MESSAGE + 4 * (id - 900))));
-	}
-
-	private String label(int table, int i) {
-		String s = so.cstring(so.u32(table + 4 * i));
-		return s == null ? "" : s;
-	}
-
 	// ---- summary (GetGOrderItemSummary) ---------------------------------------------------
 
-	/**
-	 * GetGOrderItemSummary for the info box, its main lines only: gear gets "grade name", its kind,
-	 * attack or defence and "레벨제한 n, 내구도 a/b" (in red when the level or the durability falls
-	 * short, durability shown as (v + 9) / 10); stacks get the name, "x n" and the record's text.
-	 * Set bonuses, options, sockets and runes are left out.
-	 */
+	/** GetGOrderItemSummary for the info box: an equipment instance or a bag stack slot. */
 	String summary(Object o) {
 		if (o instanceof Item.Equip e) {
-			StringBuilder b = new StringBuilder();
-			b.append(label(EQUIP_GRADE, e.origin == 1 ? 5 : e.grade)).append(' ').append(items.name(e.id)).append('\n');
-			if (e.type <= 4) {
-				b.append(label(WEAPON_HAND, e.type - 1));
-				int element = items.element(e.id);
-				if (element < WEAPON_KIND.length) {
-					String k = so.cstring(WEAPON_KIND[element]);
-					b.append(k == null ? "" : k);
-				}
-				b.append(", ").append(String.format(fmt(ATTACK_FMT), e.value));
-			} else {
-				b.append(label(ARMOUR_KIND, Math.min(7, e.type - 5))).append(", ")
-						.append(String.format(fmt(DEFENCE_FMT), e.value));
-			}
-			int limit = hero.level < e.level ? LIMIT_LEVEL_SHORT_FMT : e.dur <= e.durMax >> 2 ? LIMIT_WORN_FMT : LIMIT_FMT;
-			b.append('\n').append(String.format(fmt(limit), e.level, (e.dur + 9) / 10, (e.durMax + 9) / 10));
-			return b.toString();
+			return gearSummary(e);
 		}
 		int slot = (Integer) o;
-		int id = hero.inv.stackId[slot];
-		int count = hero.inv.stackCount[slot];
-		String name = items.name(id) + " x" + count;
-		int type = items.type(id);
-		if (type == 0xd) {
-			int k = id >> 2;
-			int kind = k == 0x1a || k == 0x1b ? 2 : k == 8 || k == 0xc || k > 0x16 && k < 0x1a || k == 0x1d || k == 0x20 || k == 0x21 ? 1 : 0;
-			return name + "\n" + so.cstring(MATERIAL_KIND + kind * 12) + "\n" + label(MATERIAL_USE, Math.min(4, items.element(id)));
-		}
-		String text = items.description(id);
-		return text.isEmpty() ? name : name + "\n" + text;
-	}
-
-	private String fmt(int va) {
-		String s = so.cstring(va);
-		return s == null ? "" : s;
+		return stackSummary(hero.inv.stackId[slot], hero.inv.stackCount[slot]);
 	}
 
 	// ---- drawing ---------------------------------------------------------------------------
@@ -600,19 +482,9 @@ final class ItemMenu {
 		}
 	}
 
-	/** GOrderFuncBack and DrawGOrderBack: the dimmed field, the frame, the tab column and the panel. */
+	/** GOrderFuncBack and DrawGOrderBack: the seven tab icons, ITEM (the second) active. */
 	private void drawBack(Gfx g) {
-		// DrawFillBlur blurs the field behind; a darker fill stands in for it.
-		g.fillRect(0, 0, W, H, 0x80000000);
-		for (int off : new int[] { 0x10, 0x18, 0x20, 0x28, 0x30 }) {
-			clix.sprite(g, gorder, Clix.GORDER, off, 0, 0);
-		}
-		for (int i = 0; i < 7; i++) {
-			clix.sprite(g, gorder, Clix.GORDER, 0x40, i * 0x12, 0);
-			clix.sprite(g, imenu, Clix.IORDER, 0x88 + 8 * i, 0, 0, 0);
-		}
-		clix.sprite(g, gorder, Clix.GORDER, 0x00, 0, 0);
-		clix.sprite(g, imenu, Clix.IORDER, 0x40 + 8, 0, 0);
+		back(g, new int[] { 0x88, 0x90, 0x98, 0xa0, 0xa8, 0xb0, 0xb8 }, 0x40 + 8);
 	}
 
 	private void drawItemStatic(Gfx g, List<Object> l) {
@@ -630,11 +502,7 @@ final class ItemMenu {
 		clix.sprite(g, gorder, Clix.GORDER, 0x240, 0, 0);
 		bar(g, 0x3a0, 0x3b0, 0x3c0, hero.hp, hero.maxHp);
 		bar(g, 0x3a8, 0x3b8, 0x3c8, hero.maxMp, hero.maxMp);
-		// Money (GOrderMoney): "1,234  " and the 'L' after it, both right-aligned in +0x2f0.
-		int[] mb = rect(Clix.GORDER, 0x2e8);
-		g.fillRect(mb[0], mb[1], mb[2], mb[3], 3 * 32 << 24 | 0xffffff);
-		mini(g, commas(hero.inv.gold) + "  ", rect(Clix.GORDER, 0x2f0), 0x12, 6);
-		mini(g, fmt(MONEY_LABEL), rect(Clix.GORDER, 0x2f0), 0x12, 0);
+		money(g, 0x2e8, 0x2f0);
 		valueBox(g, 0x2f8, String.valueOf(hero.statPower + weaponValue()), fmt(ATK_LABEL));
 		valueBox(g, 0x300, String.valueOf(hero.armor), fmt(DEF_LABEL));
 		if (tab == 0) {
@@ -810,21 +678,7 @@ final class ItemMenu {
 				}
 			}
 		}
-		edge(g, x, y, w, h, EDGE);
-		edge(g, x - 1, y - 1, w + 2, h + 2, rgb(0x88fffe00));
-		edge(g, x - 2, y - 1, w + 4, h + 2, rgb(0x88fffe00));
-		edge(g, x - 3, y - 2, w + 6, h + 4, EDGE);
-		// The arrow eases toward the cell's lower right corner over two frames.
-		int tx = x + w;
-		int ty = y + h;
-		if (arrowX < 0) {
-			arrowX = tx;
-			arrowY = ty;
-		} else {
-			arrowX += (tx - arrowX) / 2;
-			arrowY += (ty - arrowY) / 2;
-		}
-		clix.sprite(g, gorder, Clix.GORDER, 0xd8, arrowX, arrowY + so.s8(CURSOR_BOB + frames % 6));
+		cursor(g, x, y, w, h);
 	}
 
 	private void slotEdge(Gfx g, int slot) {
@@ -854,49 +708,6 @@ final class ItemMenu {
 		}
 	}
 
-	// ---- primitives ------------------------------------------------------------------------
-
-	/**
-	 * DrawGOrderIcon(x, y, id, edge style, grade): the 19 x 19 background by grade (gear and
-	 * recipes) or by id &amp; 3 (materials), then the icon frame g_anItemIcon[id] picks from
-	 * clix_icon, counted across icon0..icon7; gear of types 1..8 takes palette row record +8 +
-	 * grade with entry 1 tinted by grade, types 9..0xc add the grade to the frame.
-	 */
-	private void icon(Gfx g, int x, int y, int id, int style, int grade) {
-		int type = items.type(id);
-		int bg;
-		int tint = 0;
-		int gi = grade >= 1 && grade <= 4 ? grade - 1 : 4;
-		if (Item.equipment(type) || type == 0x13) {
-			bg = GRADE_BG[gi];
-			tint = rgb(GRADE_TINT[gi]);
-		} else if (type == 0xd) {
-			bg = MATERIAL_BG[id & 3];
-		} else {
-			bg = GRADE_BG[4];
-		}
-		if (style != 0) {
-			edge(g, x - 1, y - 1, 0x15, 0x15, style == 1 ? EDGE : style == 2 ? rgb(0xffb21900) : 0xff000000);
-		}
-		g.fillRect(x, y, 0x13, 0x13, rgb(bg));
-		int f = so.s16(Clix.ICON + so.u8(ITEM_ICON + id) * 8 + 4);
-		int row = 0;
-		if (type >= 1 && type <= 8) {
-			row = items.colour(id) + grade;
-		} else if (type >= 9 && type <= 0xc) {
-			f += grade;
-			tint = 0;
-		} else {
-			tint = 0;
-		}
-		for (int k = 0; k < 8; k++) {
-			if (f >= iconFirst[k] && f < iconFirst[k + 1]) {
-				g.drawImage(icons[k].frame(f - iconFirst[k], row, tint), x, y);
-				return;
-			}
-		}
-	}
-
 	/** An HP or SP bar: the empty frame, the full one cut to value / max, and the 1 px border. */
 	private void bar(Gfx g, int full, int empty, int frameRect, int value, int max) {
 		clix.sprite(g, gameui, Clix.GAMEUI, empty, 0, 0);
@@ -919,110 +730,4 @@ final class ItemMenu {
 		mini(g, label, r, 0x10, 5);
 	}
 
-	/** 1234567 as "1,234,567" (String.format's ',' flag is avoided for the web build). */
-	static String commas(int v) {
-		String s = Integer.toString(v);
-		StringBuilder b = new StringBuilder();
-		for (int i = 0; i < s.length(); i++) {
-			if (i > 0 && s.charAt(i - 1) != '-' && (s.length() - i) % 3 == 0) {
-				b.append(',');
-			}
-			b.append(s.charAt(i));
-		}
-		return b.toString();
-	}
-
-	/**
-	 * DrawMiniString: letters are clix_gameui entry (c &amp; ~0x20) + 0x71, digits c + 0x67, a few
-	 * signs their own entries, anything else a 6 px gap; a glyph advances its width + 1. Flags:
-	 * &amp; 3 aligns across (1 centre, 2 right), 0x10 centres down, 0x20 sits 7 px above the bottom.
-	 */
-	private void mini(Gfx g, String s, int[] r, int flags, int row) {
-		int w = 0;
-		for (char c : s.toCharArray()) {
-			w += miniAdvance(c);
-		}
-		int x = r[0] + ((flags & 3) == 0 ? 0 : (flags & 1) == 0 ? r[2] - w : r[2] - w >> 1);
-		int y = r[1] + ((flags & 0x30) == 0 ? 0 : (flags & 0x10) == 0 ? r[3] - 7 : r[3] - 6 >> 1);
-		for (char c : s.toCharArray()) {
-			int e = miniEntry(c);
-			if (e >= 0) {
-				clix.sprite(g, gameui, Clix.GAMEUI, e * 8, x, y, row);
-			}
-			x += miniAdvance(c);
-		}
-	}
-
-	private int miniAdvance(char c) {
-		int e = miniEntry(c);
-		return e < 0 ? 6 : gameui.width(clix.frame(Clix.GAMEUI, e * 8)) + 1;
-	}
-
-	private static int miniEntry(char c) {
-		if (c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z') {
-			return (c & ~0x20) + 0x71;
-		}
-		if (c >= '0' && c <= '9') {
-			return c + 0x67;
-		}
-		return switch (c) {
-			case '*' -> 0xa1;
-			case '#' -> 0xa2;
-			case '%' -> 0xa3;
-			case '+' -> 0xa4;
-			case '-' -> 0xa5;
-			case ':' -> 0xa6;
-			case '.', ',' -> 0xa7;
-			case '|' -> 0xa8;
-			case '<' -> 0xad;
-			case '>' -> 0xae;
-			case '/' -> 0xaf;
-			default -> -1;
-		};
-	}
-
-	/** DrawGOrderHero's level digits: clix_gameui + (ch - 0x13) * 8. */
-	private void glyph(Gfx g, char c, int x, int y, int row) {
-		clix.sprite(g, gameui, Clix.GAMEUI, (c - 0x13) * 8, x, y, row);
-	}
-
-	/** Lines break at '\n' and at the width; "\x07 d" switches colour as DrawString does; 16 px a line. */
-	private void text(Gfx g, String s, int x, int y, int w) {
-		int argb = 0xffffffff;
-		int tx = x;
-		int ty = y;
-		for (int i = 0; i < s.length(); i++) {
-			char c = s.charAt(i);
-			if (c == 7 && i + 1 < s.length()) {
-				char d = s.charAt(++i);
-				argb = d == '0' ? 0xffffffff : rgb(so.u32(TEXT_COLOR + (d - '1') * 4));
-				continue;
-			}
-			int cw = Gfx.stringWidth(String.valueOf(c));
-			if (c == '\n' || tx + cw > x + w) {
-				tx = x;
-				ty += 16;
-				if (c == '\n') {
-					continue;
-				}
-			}
-			tx += g.drawString(String.valueOf(c), tx, ty, argb);
-		}
-	}
-
-	private int[] rect(int table, int off) {
-		return new int[] { clix.x(table, off), clix.y(table, off), clix.w(table, off), clix.h(table, off) };
-	}
-
-	private static void edge(Gfx g, int x, int y, int w, int h, int argb) {
-		g.fillRect(x, y, w, 1, argb);
-		g.fillRect(x, y + h - 1, w, 1, argb);
-		g.fillRect(x, y, 1, h, argb);
-		g.fillRect(x + w - 1, y, 1, h, argb);
-	}
-
-	/** SetColorDraw's BBGGRR00 as opaque ARGB. */
-	private static int rgb(int bbggrr00) {
-		return 0xff000000 | ((bbggrr00 >>> 8) & 0xff) << 16 | ((bbggrr00 >>> 16) & 0xff) << 8 | bbggrr00 >>> 24;
-	}
 }

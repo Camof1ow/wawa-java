@@ -143,6 +143,9 @@ final class EventRunner {
 
 		/** A command whose subsystem this port does not have. */
 		void notPorted(String what);
+
+		/** Lo 2: GOrderFuncUp(0xd) in shop mode {@code mode} over grades first..last. */
+		void openShop(int mode, int first, int last);
 	}
 
 	private static final class Entry {
@@ -533,7 +536,16 @@ final class EventRunner {
 				}
 				case 2 -> {
 					w.heroStop();
-					w.notPorted("GOrder/GMenu 화면(" + Integer.toHexString(op) + ")");
+					// Modes 0, 1 and 6 read the grade range (and an option flag) from three bytes;
+					// mode 3 ignores its bytes. Gamble (2), the quest board (4) and the cash shop (5)
+					// are not ported.
+					if (hi == 0 || hi == 1 || hi == 6) {
+						w.openShop(hi, d[a] & 0xff, d[a + 1] & 0xff);
+					} else if (hi == 3) {
+						w.openShop(3, 0, 0);
+					} else {
+						w.notPorted("GOrder/GMenu 화면(" + Integer.toHexString(op) + ")");
+					}
 					e.pc++;
 					return 0;
 				}

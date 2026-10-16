@@ -19,6 +19,7 @@ Android 게임 와일드 프론티어(`wild.apk`)를 `libwawa.so` 역공학으�
 | 전투·저장 | 칸 이동, 턴제 전투, 물약(2번 키: 가진 HP 포션 중 가장 싼 것을 원작 사용 스크립트로 마심), 슬롯 저장·불러오기 | `GameCore`, `Hero`, `Combat` |
 | 소지품 | 원작 영웅 기록의 구조 그대로: 장비 인스턴스 50칸(쓸 수 있는 칸 20)과 묶음 305칸(재료 40·소모품 12·기타 30·제작서 30), 골드. `AddItem`/`DelItem`/`SortItem`/`GetItemCount` 규칙, 스크립트의 아이템 지급·회수·개수 조건(종류 0 묶음 포함)과 즉시 장착, 골드 대입(`hero+0xa4`). 장착한 무기가 공격, 갑옷·투구(직업 1은 방패도)가 방어에 들어가고 외형도 바뀐다. 새 게임은 원작 `InitHero`처럼 골드 0, 빈 가방으로 시작한다 | `Inventory`, `Item`, `Hero`, `HeroAnim` |
 | 메뉴 ITEM 탭 | `I`·Backspace(원작 CLEAR)로 연다. 원작 시트(`gorder`·`imenu`·`gameui`·`icon0..7`)와 정적 clix 표 배치 그대로: 탭 열, 카테고리 5개(장비·소모품·재료·기타·제작서), 장비 슬롯 12칸, 가방 격자·스크롤·칸 수, 주인공 미리보기·레벨·HP/SP, 돈·ATK·DEF, 아이템 요약. `KeyPressGOrderItem`의 커서·감김 규칙, 팝업(`DrawItemSelect`)의 장착·해제·사용·상세보기·버리기, 확인창 GMenu 0xcc·0xce, 메시지 0x38e | `ItemMenu`, `Clix`, `Gsac` |
+| 상점 | 이벤트 lo 2가 여는 GOrder 0xd(구매)·0xe(판매), 모드 0·1(카테고리 탭 4개)·3(잡화)·6(잡화를 등급 범위만큼). 원작 상품표(`0x10b968..`), 가격(`GetGOrderItemCost`: 구매 기본가×2, 판매 기본가, 도박 장비 60), BUY/SELL 막대와 `KeyPressGOrderBuySell` 규칙, 수량 팝업 0xca·0xcb(←→ 1, ↑↓ 10)와 장비 팝업 0xcf·0xd0, 메시지 0x385·0x386, 상점 주인(말을 건 NPC) 그리기 | `ShopMenu`, `OrderScreen` |
 | 입력 | 키보드, 한글 입력기(이름 입력), 마우스 클릭 | `Game`, `WebMain` |
 
 새 게임의 `t01` 오프닝은 끝까지 진행된다(1359프레임). 22개 맵의 시작 이벤트도 모두 멈추지 않고 끝난다.
@@ -70,7 +71,7 @@ flowchart LR
   - KS X 1001 한글·기호·ASCII만 남긴 부분집합을 쓴다.
   - 파일은 `src/main/resources/wawa/GalmuriMono11.ttf`이고, 라이선스 파일이 같은 폴더에 있다.
 - **원작 규칙 유지:** 어느 글자를 그리고 얼마나 전진하는지는 원작 `DrawString`(0x365f4) 규칙(`Font`)을 그대로 쓴다.
-- **근사 처리:** 글자 위에 덮이는 그림(페이드 등)은 글자 중심 픽셀의 색을 글자색에 섞는 식으로 처리한다.
+- **근사 처리:** 글자 위에 반투명하게 덮이는 그림(페이드 등)은 글자 중심 픽셀의 색을 글자색에 섞는다. 중심이 불투명한 그림·칠에 덮이면 그 글자를 지운다(색만 바꾸면 무늬 있는 배경 위에 글자 윤곽이 비쳤다).
 
 ## 5. 검증 방법
 
@@ -78,7 +79,7 @@ flowchart LR
 
 | 검증 | 명령 | 기대 결과 |
 |---|---|---|
-| 셀프 테스트 | `java -cp out wawa.Game <wild.apk> --selftest` (먼저 `wawa-slot*.properties` 삭제) | `intro frames=1359 running=false map=t01 hero=11,15 var1=1 …`, `walk frames=22 hero=0,15 dir=2`, `mapmove map=t02 hero=23,14 dir=2 frames=302 …`, `slot=0 name=와와 class=1 map=a01 …`, `terrain 27,10->27,10 dir=3 15,17->16,18 dir=1`(깊은 바다에 막힘, 바위를 오른쪽으로 비켜 감), `monster-terrain 27 28 28`(마스크 0x2b는 깊은 바다에 막히고 0x02·0은 건넘), `bossgate asked=true cancel=z01 enter=a11`(경고창이 뜨고, 취소하면 머물고, 입장하면 들어감), `inventory add=0,0 slots=99/61 left=0 slots=60/0 count=60 slot3=false slot1=true worn=true roundtrip=true`(AddItem·DelItem·장착·저장 왕복), `potion hp=1->1xx …`(하급 포션이 전역 phase 3으로 회복; 회복량은 실행마다 117~133으로 달라진다), `menu open=true unequip=true/12 wear=true/15 use=3->2 closed=true`(메뉴에서 단검 해제·재장착, 물약 사용 확인창, 닫기), `out/*.png` 19장(2배 크기, `bossgate.png`·`menu-item.png`·`menu-popup.png` 포함) |
+| 셀프 테스트 | `java -cp out wawa.Game <wild.apk> --selftest` (먼저 `wawa-slot*.properties` 삭제) | `intro frames=1359 running=false map=t01 hero=11,15 var1=1 …`, `walk frames=22 hero=0,15 dir=2`, `mapmove map=t02 hero=23,14 dir=2 frames=302 …`, `slot=0 name=와와 class=1 map=a01 …`, `terrain 27,10->27,10 dir=3 15,17->16,18 dir=1`(깊은 바다에 막힘, 바위를 오른쪽으로 비켜 감), `monster-terrain 27 28 28`(마스크 0x2b는 깊은 바다에 막히고 0x02·0은 건넘), `bossgate asked=true cancel=z01 enter=a11`(경고창이 뜨고, 취소하면 머물고, 입장하면 들어감), `inventory add=0,0 slots=99/61 left=0 slots=60/0 count=60 slot3=false slot1=true worn=true roundtrip=true`(AddItem·DelItem·장착·저장 왕복), `potion hp=1->1xx …`(하급 포션이 전역 phase 3으로 회복; 원작 설명대로 108~132 난수라 실행마다 다르다), `menu open=true unequip=true/12 wear=true/15 use=3->2 closed=true`(메뉴에서 단검 해제·재장착, 물약 사용 확인창, 닫기), `shop open=true buy=하급 포션 2->4 gold=5000->4880 cost=30 gear=낡은 단검 grade=4 origin=1 paid=0 cost=0 sell=0+120 closed=true talkDone=true`(a01 수잔의 모드 6 상점에서 포션 2개 구매·장비 구매·판매, 닫은 뒤 대화가 끝남; 낡은 단검은 원작 가격이 0), `out/*.png` 23장(2배 크기, `bossgate.png`·`menu-*.png`·`shop-*.png` 포함) |
 | 맵 전체 로드 | `java -cp out wawa.CheckMapsRun <assets>` | `failures=0` |
 | 디코더 동등성(전환 때 1회) | 옛 AWT 경로와 새 `Img` 경로의 픽셀 비교 | Gsac 132개(4582프레임), PNG 75개, 포즈 2784개, 이벤트 문장 135개에서 차이 0 |
 | 웹 | 로컬 정적 서버에서 타이틀 → 새 게임 → 한글 이름 → 오프닝 → F5 저장 → 새로고침 → 불러오기 | 모두 통과 |
@@ -103,9 +104,10 @@ flowchart LR
 ## 7. 남은 일
 
 **아직 포팅하지 않은 것**
-- **이벤트:** 퀘스트, 버프, 사운드, 확대, 데미지 숫자가 없다. GMenu/GOrder 화면 중 남은 것은 퀘스트 제안 GMenu 100(이벤트 132줄), 상점 계열 GOrder 0xd(lo 2 hi 0·1·2 z01, hi 3 8번, hi 6 7번), 퀘스트 게시판 GOrder 8(마을 6곳)이다. 모두 인벤토리나 퀘스트 상태가 있어야 한다. 그 밖에 `04`, 엔딩 `8b`, 효과·공격 동작, 맵 오브젝트 `c3`/`d3`, SetCamping `75..a5`가 남았다. 만나면 `[미포팅]` 로그를 남기고 건너뛴다.
+- **이벤트:** 퀘스트, 버프, 사운드, 확대, 데미지 숫자가 없다. GMenu/GOrder 화면 중 남은 것은 퀘스트 제안 GMenu 100(이벤트 132줄), 상점 계열의 도박(lo 2 hi 2, z01)과 유료 상점(hi 5), 퀘스트 게시판 GOrder 8(마을 6곳)이다. 그 밖에 `04`, 엔딩 `8b`, 효과·공격 동작, 맵 오브젝트 `c3`/`d3`, SetCamping `75..a5`가 남았다. 만나면 `[미포팅]` 로그를 남기고 건너뛴다.
 - **보스·리젠 맵:** 원작은 그 맵의 리젠 기록(`GetRegen`)이 살아 있으면 묻지 않고 들어가는데, 포트는 리젠 기록이 없어서 매번 묻는다. 경고문은 "입장 후 저장할 수 없습니다"라고 하지만 포트는 보스 맵에서도 F5 저장을 막지 않는다.
-- **게임 시스템:** 상점이 없다(진행 중인 ③단계). 메뉴는 ITEM 탭만 있다(STATUS·스킬·펫·기록·퀘스트·시스템 탭 없음). 몬스터는 정지 포즈만 있다. 주인공의 공격·스킬·탈것 동작이 없다.
+- **게임 시스템:** 메뉴는 ITEM 탭만 있다(STATUS·스킬·펫·기록·퀘스트·시스템 탭 없음). 상점은 도박(모드 2)과 유료 상점(모드 4)이 없다. 몬스터는 정지 포즈만 있다. 주인공의 공격·스킬·탈것 동작이 없다.
+- **상점의 차이:** 구매 옵션 인자(`+0x12c`)가 주는 소켓·옵션은 넣지 않는다(옵션·소켓 미포팅). 수량 팝업의 길게 누르기 반복(`CalcGMenu`)은 운영체제 키 반복에 맡긴다. 수량 상자 테두리 색과 장비 팝업 아이콘 위치는 추정이다. 원작의 이상 동작은 그대로 둔다: 모드 6은 보이지 않는 탭에 커서가 있어 OK를 두 번 눌러야 격자로 가고, 판매 화면은 탭 포커스를 초기화하지 않는다. 퀘스트 아이템 검사(`CheckQuestItem`)는 퀘스트가 없어 생략한다.
 - **메뉴 ITEM 탭의 차이:** 원작 CLEAR는 STATUS 탭으로 여는데 포트는 ITEM 탭으로 연다. 배경 흐림(`DrawFillBlur`)은 어둡게 칠하기로 대신한다. 요약문은 이름·종류·공격/방어·레벨제한·내구도와 설명 줄만 있다(세트·옵션·소켓·룬 줄 없음). 버리기는 수량 선택 없이 묶음 전체를 버린다. 확인창 0xcc·0xce는 0x74 경고창 모양으로 그린다. 제작·키등록·추적과 재료의 압축·분해·변이는 `아직 포팅되지 않았습니다` 로그만 남긴다. 스킬로 여는 슬롯 2·7·8은 늘 닫혀 있다. 메뉴에서 쓸 수 있는 것은 소모품(종류 0xe·0xf)뿐이다.
 - **소지품 남은 것:** 장비 옵션·룬·소켓의 효과, 아이템 쿨다운(`hero+0x388`), 빠른 슬롯, 전투 중 내구도 감소와 수리, NPC 이벤트 전 가방 검사(가득 차면 GMenu 0x386)가 없다. 몬스터가 떨구는 아이템 대신 포트가 처치 3번에 1번꼴로 하급 포션을 준다. 쓰러지면 포트는 골드 50을 잃지만 원작은 2.5%(헬 5%)를 잃는다.
 - **충돌 남은 것:** 맵 오브젝트 발자국(`LoadGameBlock`의 bit 0)과 배치 항목 발자국(0x08·0x10·0x20)은 격자에 넣지 않았다. 오브젝트를 아직 그리지 않아서 보이지 않는 벽이 되기 때문이다. 몬스터 마스크도 지형 비트만 쓴다. 스크립트 걷기와 몬스터에는 비켜 서기를 넣지 않았다. 대각 걷기는 목적 칸이 지형이면 멈추지만, 원작은 x·y를 1px씩 따로 움직여 벽을 타고 미끄러진다.

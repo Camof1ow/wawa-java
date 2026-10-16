@@ -738,12 +738,7 @@ final class TalkBox {
 	 * the style-3 slots +0xc0 (160, 220) and +0xd0 (290, 220): Enter lit on cursor 0, Cancel on 1.
 	 */
 	private void drawWarning(Gfx g) {
-		g.fillRect(0, 0, W, H, (3 * 32) << 24);
-		g.drawImage(imenu.frame(1), 140, 40);
-		g.drawImage(gorder.frame(17), 191, 49);
-		g.fillRect(151, 66, 218, 1, rgb(0x2463a300));
-		g.fillRect(150, 67, 220, 1, rgb(MENU_TEXT));
-		drawBytes(g, warnTitle, 0, warnTitle.length, 150 + ((220 - width(warnTitle, 0, warnTitle.length)) >> 1), 49, MENU_TEXT);
+		menuBack3(g, warnTitle);
 		g.fillRect(145, 75, 225, 140, (3 * 32) << 24);
 		int n = Math.min(lines.size(), (130 + 2) / 17);
 		int y = 80 + ((130 - 17 * n + 2) >> 1);
@@ -753,6 +748,16 @@ final class TalkBox {
 		}
 		button(g, choiceLabels[0], 160, 220, cursor == 0);
 		button(g, choiceLabels[1], 290, 220, cursor == 1);
+	}
+
+	/** DrawGMenuBack and DrawGMenuTitle for a style-3 GMenu (0x74, the shop's popups). */
+	void menuBack3(Gfx g, byte[] title) {
+		g.fillRect(0, 0, W, H, (3 * 32) << 24);
+		g.drawImage(imenu.frame(1), 140, 40);
+		g.drawImage(gorder.frame(17), 191, 49);
+		g.fillRect(151, 66, 218, 1, rgb(0x2463a300));
+		g.fillRect(150, 67, 220, 1, rgb(MENU_TEXT));
+		drawBytes(g, title, 0, title.length, 150 + ((220 - width(title, 0, title.length)) >> 1), 49, MENU_TEXT);
 	}
 
 	/** DrawGMenuBack(0, 0, 1): DrawWholeFade (black 3/8 over the screen), then imenu frame 2 at x 140. */
@@ -766,7 +771,7 @@ final class TalkBox {
 	 * around it and white text outlined in {@link #MENU_TEXT}; otherwise black 2/8 and text in
 	 * 0xbbe9ff00. The text is centred both ways (flag 0x11).
 	 */
-	private void button(Gfx g, byte[] label, int x, int y, boolean selected) {
+	void button(Gfx g, byte[] label, int x, int y, boolean selected) {
 		g.fillRect(x, y, 70, 20, ((selected ? 4 : 2) * 32) << 24);
 		int tx = x + ((70 - width(label, 0, label.length)) >> 1);
 		int ty = y + ((20 - 15) >> 1);

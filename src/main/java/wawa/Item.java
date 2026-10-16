@@ -50,6 +50,33 @@ public final class Item {
 		return elf.u16(record(id));
 	}
 
+	/** AddItem's grade multiplier on the base value: grades 1..4 add a quarter, a half, three quarters or double. */
+	public int graded(int id, int grade) {
+		int v = baseValue(id);
+		return switch (grade) {
+			case 1 -> v + (v >> 2);
+			case 2 -> v + (v >> 1);
+			case 3 -> v + (v * 3 >> 2);
+			case 4 -> v << 1;
+			default -> v;
+		};
+	}
+
+	/**
+	 * GetGOrderItemCost's base: the u24 at record +9 (types 1..8), +7 (9..0xc), +2 (0xe, 0xf, 0x12)
+	 * or +0 (0xd, 0x10, 0x13, 0x14); 0 for the rest. Buying costs twice this.
+	 */
+	public int cost(int id) {
+		int t = type(id);
+		int at = t >= 1 && t <= 8 ? 9 : t >= 9 && t <= 0xc ? 7 : t == 0xe || t == 0xf || t == 0x12 ? 2
+				: t == 0xd || t == 0x10 || t == 0x13 || t == 0x14 ? 0 : -1;
+		if (at < 0) {
+			return 0;
+		}
+		int r = record(id) + at;
+		return elf.u8(r) | elf.u8(r + 1) << 8 | elf.u8(r + 2) << 16;
+	}
+
 	public int spread(int id) {
 		return elf.u8(record(id) + 2);
 	}
@@ -121,14 +148,18 @@ public final class Item {
 		return elf.u32(KIND + id * 4) >> 5 & 7;
 	}
 
-	/** Record +3 length, +4 EUC-KR text: the line GetGOrderItemSummary shows for types 0x10 and 0x14, else "". */
+	/**
+	 * The Pascal string GetGOrderItemSummary shows under a stack's name: record +5 for types 0xe
+	 * and 0xf, +3 for 0x10 and 0x14, else "".
+	 */
 	public String description(int id) {
 		int t = type(id);
-		if (t != 0x10 && t != 0x14) {
+		int at = t == 0xe || t == 0xf ? 5 : t == 0x10 || t == 0x14 ? 3 : -1;
+		if (at < 0) {
 			return "";
 		}
-		int r = record(id);
-		byte[] b = elf.bytes(r + 4, elf.u8(r + 3));
+		int r = record(id) + at;
+		byte[] b = elf.bytes(r + 1, elf.u8(r));
 		return Ksc.decode(b, 0, b.length);
 	}
 
@@ -146,14 +177,7 @@ public final class Item {
 	public Equip create(int id, int grade, Random rng) {
 		int t = type(id);
 		int g = grade < 0 ? ~grade : grade;
-		int v = baseValue(id);
-		v = switch (g) {
-			case 1 -> v + (v >> 2);
-			case 2 -> v + (v >> 1);
-			case 3 -> v + (v * 3 >> 2);
-			case 4 -> v << 1;
-			default -> v;
-		};
+		int v = graded(id, g);
 		int s = spread(id);
 		int value = randRange(rng, 100 - s, 100 + s) * v / 100;
 		int ds = durabilitySpread(id);

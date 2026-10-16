@@ -88,13 +88,20 @@ final class GameCore {
 	/** The menu's ITEM tab (GOrder, opened with CLEAR or I): the field stands still while it is open. */
 	private ItemMenu itemMenu;
 	private boolean menuOpen;
+	/** GOrder 0xd/0xe (event lo 2): the field stands still while the shop is open. */
+	private ShopMenu shop;
+	private boolean shopOpen;
+	/** gorder+0x48: the NPC CheckHeroOnNPC last talked to, the shop's keeper. */
+	private Monster shopKeeper;
 	/** A GMenu over the menu: a confirmation runs menuYes on "O.확인"; a message has none. */
 	private boolean menuGMenu;
 	private Runnable menuYes;
 	/** DrawGMenuButtonAll's 0x180000 and 0x900 labels: "O.확인" and "X.취소". */
 	private static final int OK_LABEL = 0xd2b20;
 	private static final int CANCEL_LABEL = 0xd2c3c;
-	private final ItemMenu.Host menuHost = new ItemMenu.Host() {
+	/** The GOrder sheets, loaded the first time a GOrder screen opens. */
+	private OrderScreen.Sheets orderSheets;
+	private final OrderScreen.Host menuHost = new OrderScreen.Host() {
 		@Override
 		public void confirm(byte[] title, byte[] text, Runnable onYes) {
 			talk.startWarning(title, text, so.cbytes(OK_LABEL), so.cbytes(CANCEL_LABEL));
@@ -122,6 +129,7 @@ final class GameCore {
 		@Override
 		public void close() {
 			menuOpen = false;
+			shopOpen = false;
 		}
 
 		@Override
@@ -277,7 +285,7 @@ final class GameCore {
 	void tick() {
 		if (!selecting) {
 			playMillis += delay;
-			if (bossGate == null && !menuOpen) {
+			if (bossGate == null && !menuOpen && !shopOpen) {
 				gameTick();
 			}
 		}
@@ -797,7 +805,7 @@ final class GameCore {
 			}
 			return;
 		}
-		if (menuOpen) {
+		if (menuOpen || shopOpen) {
 			menuKey(code);
 			return;
 		}
@@ -1076,7 +1084,7 @@ final class GameCore {
 	private void openMenu() {
 		try {
 			if (itemMenu == null) {
-				itemMenu = new ItemMenu(assets, so, items, heroAnim);
+				itemMenu = new ItemMenu(orderSheets(), so, items, heroAnim);
 			}
 		} catch (IOException e) {
 			log = "메뉴 로드 실패: " + e;
@@ -1086,6 +1094,57 @@ final class GameCore {
 		itemMenu.open(hero, menuHost);
 		menuOpen = true;
 	}
+
+	private OrderScreen.Sheets orderSheets() throws IOException {
+		if (orderSheets == null) {
+			orderSheets = new OrderScreen.Sheets(assets, so);
+		}
+		return orderSheets;
+	}
+
+	/** Event lo 2: GOrderFuncUp(0xd) with the NPC last talked to behind the counter. */
+	private void openShop(int mode, int first, int last) {
+		try {
+			if (shop == null) {
+				shop = new ShopMenu(orderSheets(), so, items, talk, rng);
+			}
+		} catch (IOException e) {
+			log = "상점 로드 실패: " + e;
+			return;
+		}
+		shop.open(hero, menuHost, shopKeeperView, mode, first, last);
+		shopOpen = true;
+	}
+
+	/** ChangeMonsDir and DrawGOrderMons for the shop's keeper, animated by the shop's own frames. */
+	private final ShopMenu.Keeper shopKeeperView = new ShopMenu.Keeper() {
+		@Override
+		public void face(int dir) {
+			if (shopKeeper != null) {
+				changeDir(shopKeeper, 1, dir);
+			}
+		}
+
+		@Override
+		public void draw(Gfx g, int x, int y, int w, int h, int frame) {
+			Monster m = shopKeeper;
+			if (m == null || monsterSprites == null) {
+				return;
+			}
+			int[] e = m.ani >= 0 ? monsterSprites.animEntry(m.variant, m.ani) : null;
+			int steps = Math.max(1, e == null ? 1 : e[2]);
+			PartSprites.Pose pose = m.ani >= 0 ? monsterSprites.pose(m.variant, m.ani, frame / 2 % steps, m.mirror)
+					: monsterSprites.standing(m.variant);
+			if (pose == null) {
+				return;
+			}
+			// Clipped to the box's inside, centred across, feet at the centre + 0x1e.
+			int[] old = g.getClip();
+			g.clipRect(x + 1, y + 1, w - 2, h - 2);
+			g.drawImage(pose.image(), x + w / 2 - pose.anchorX(), y + h / 2 + 0x1e - pose.anchorY());
+			g.setClip(old);
+		}
+	};
 
 	/** KeyPressGMenu over the menu first, else KeyPressGOrder. */
 	private void menuKey(int code) {
@@ -1107,7 +1166,11 @@ final class GameCore {
 			}
 			return;
 		}
-		itemMenu.key(code);
+		if (shopOpen) {
+			shop.key(code);
+		} else {
+			itemMenu.key(code);
+		}
 	}
 
 	private int potionCount() {
@@ -1144,12 +1207,16 @@ final class GameCore {
 		g.drawString(log, MAP_X, OVERLAY_H, 0xfffae696);
 		// One line of the 16 px font is all that fits under the log; the map keys (3..[) stay unlisted.
 		g.drawString("Enter 대화 1 공격 2 물약 I 가방 F5 저장 F9 불러오기 ESC 종료", MAP_X, OVERLAY_H + 18, 0xffaaa596);
-		if (events.overlay() || bossGate != null || menuOpen) {
+		if (events.overlay() || bossGate != null || menuOpen || shopOpen) {
 			// DrawPhase and DrawGMenu work on the original 480x320 screen; fit it like the slot screen.
 			Arrays.fill(overlay.px, 0);
 			Gfx og = new Gfx(overlay);
-			if (menuOpen) {
-				itemMenu.draw(og);
+			if (menuOpen || shopOpen) {
+				if (shopOpen) {
+					shop.draw(og);
+				} else {
+					itemMenu.draw(og);
+				}
 				if (menuGMenu) {
 					talk.draw(og, 0, true);
 				}
@@ -1754,6 +1821,7 @@ final class GameCore {
 			if (m.npc && m.fade <= 0 && Math.abs(m.x - heroX) <= 1 && Math.abs(m.y - heroY) <= 1) {
 				changeDir(m, 1, stepDir(Integer.compare(heroX, m.x), Integer.compare(heroY, m.y)));
 				npcName = m.kind;
+				shopKeeper = m;
 				if (events.searchUnit(4, m.uid)) {
 					return;
 				}
@@ -2367,6 +2435,11 @@ final class GameCore {
 		public void notPorted(String what) {
 			GameCore.this.notPorted(what);
 		}
+
+		@Override
+		public void openShop(int mode, int first, int last) {
+			GameCore.this.openShop(mode, first, last);
+		}
 	}
 
 	/** Every unported command a script reached, printed once each. */
@@ -2861,6 +2934,89 @@ final class GameCore {
 		key(Keys.BACK_SPACE);
 		System.out.println("menu open=" + opened + " unequip=" + off + " wear=" + on + " use=" + used + " closed="
 				+ !menuOpen);
+		// Shop: in a01 수잔 (unit 4) ends her talk with event lo 2 hi 6, GOrderFuncUp(0xd) in mode 6
+		// (the misc goods over a grade range). With 5,000 gold: OK leaves the BUY/SELL bar, a second
+		// OK lets go of mode 6's unseen tabs, RIGHT twice reaches the third cell (하급 포션), OK opens
+		// 0xca at 1, RIGHT makes 2, OK buys at twice the base each. Back returns to the bar, DOWN
+		// switches to SELL, and the first cell sells whole at its base. Back twice closes; the talk
+		// then ends.
+		loadMap("a01");
+		enterEvents();
+		for (int i = 0; i < 600 && events.active(); i++) {
+			gameTick();
+		}
+		Monster susan = null;
+		for (Monster m : monsters) {
+			if (m.npc && m.uid == 4) {
+				susan = m;
+			}
+		}
+		heroX = susan.x;
+		heroY = susan.y + 1;
+		hero.inv.gold = 5000;
+		talkToNpc();
+		for (int i = 0; i < 600 && events.active() && !shopOpen; i++) {
+			gameTick();
+			if (i % 5 == 0) {
+				key(Keys.ENTER);
+			}
+		}
+		boolean shopped = shopOpen;
+		writeFrame(sink, "shop-buy.png");
+		int id = so.u16(0x10ba30 + 4);
+		int had = hero.inv.count(id, -1);
+		key(Keys.ENTER);
+		key(Keys.ENTER);
+		key(Keys.RIGHT);
+		key(Keys.RIGHT);
+		key(Keys.ENTER);
+		key(Keys.RIGHT);
+		writeFrame(sink, "shop-popup.png");
+		key(Keys.ENTER);
+		String buy = items.name(id) + " " + had + "->" + hero.inv.count(id, -1) + " gold=5000->" + hero.inv.gold
+				+ " cost=" + items.cost(id);
+		// The last misc cell (23rd: row 3, column 4) is 낡은 단검 at grade 4: 0xcf buys one, bought (+0x1d = 1).
+		int gearId = so.u16(0x10ba30 + 2 * 22);
+		int goldBefore = hero.inv.gold;
+		key(Keys.DOWN);
+		key(Keys.DOWN);
+		key(Keys.DOWN);
+		key(Keys.RIGHT);
+		key(Keys.RIGHT);
+		key(Keys.ENTER);
+		writeFrame(sink, "shop-gear.png");
+		key(Keys.ENTER);
+		Item.Equip bought = hero.inv.equip[0];
+		for (Item.Equip e : hero.inv.equip) {
+			if (e != null && e.slot == 0) {
+				bought = e;
+			}
+		}
+		String gear = items.name(bought.id) + " grade=" + bought.grade + " origin=" + bought.origin + " paid="
+				+ (goldBefore - hero.inv.gold) + " cost=" + items.cost(gearId);
+		// SELL: the unworn dagger comes first (0xd0, its base), then the potions (0xcb, the whole stack).
+		goldBefore = hero.inv.gold;
+		key(Keys.BACK_SPACE);
+		key(Keys.DOWN);
+		key(Keys.ENTER);
+		writeFrame(sink, "shop-sell.png");
+		key(Keys.ENTER);
+		key(Keys.ENTER);
+		int gearSold = hero.inv.gold - goldBefore;
+		key(Keys.ENTER);
+		key(Keys.ENTER);
+		String sell = gearSold + "+" + (hero.inv.gold - goldBefore - gearSold);
+		key(Keys.BACK_SPACE);
+		key(Keys.BACK_SPACE);
+		boolean closed = !shopOpen;
+		for (int i = 0; i < 600 && events.active(); i++) {
+			gameTick();
+			if (i % 5 == 0) {
+				key(Keys.ENTER);
+			}
+		}
+		System.out.println("shop open=" + shopped + " buy=" + buy + " gear=" + gear + " sell=" + sell + " closed="
+				+ closed + " talkDone=" + !events.active());
 		new GameCore(assets, storage).writeFrame(sink, "slots-after.png");
 	}
 

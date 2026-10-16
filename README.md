@@ -41,11 +41,12 @@ logic is re-derived from the native code, and every format is decoded from the s
   ported as the original keeps them (`Inventory`: 50 equipment instances and 305 stack slots, gold),
   with AddItem / DelItem / SortItem / GetItemCount and the event item commands; worn gear sets
   attack, defence and the hero's looks. The menu's ITEM tab (`ItemMenu`, opened with `I` or
-  Backspace) lists, equips, unequips, uses and discards them on the original sheets; the other menu
-  tabs and the shops are not ported yet, nor gear options, runes, sockets, cooldowns and durability
-  loss.
+  Backspace) lists, equips, unequips, uses and discards them on the original sheets, and the shops
+  scripts open (`ShopMenu`, GOrder 0xd/0xe modes 0, 1, 3 and 6) buy and sell at the original's
+  prices. The other menu tabs, the gamble and cash shops, gear options, runes, sockets, cooldowns
+  and durability loss are not ported yet.
 - **Event script gaps.** Quests, buffs, sound, zoom, map exit, area and object triggers, and
-  effect/attack actions are not ported, nor the quest offer (GMenu 100), the shops (GOrder 0xd)
+  effect/attack actions are not ported, nor the quest offer (GMenu 100), the gamble and cash shops
   and the quest board (GOrder 8); a script that reaches one logs `[미포팅]` and carries on.
   Boss/regen map exits do open their warning (GMenu 0x74) and enter on its Enter button.
 - **Animation playback.** Poses for any state and step are composed (`MonsterAnim.pose`,
@@ -81,8 +82,8 @@ java -cp out wawa.ExtractAll <path-to-assets> <output-dir>
 `wawa.Game` supports `--selftest` to drive scripted input through the opening, the slot screen, a
 new game with t01's opening scene and a few fights, writing `out/logo.png`, `out/title*.png`,
 `out/slots.png`, `out/newgame.png`, `out/intro*.png`, `out/selftest.png`, `out/menu-item.png`,
-`out/menu-popup.png` and `out/slots-after.png`,
-so the render can be checked without a GUI.
+`out/menu-popup.png`, `out/shop-*.png` and `out/slots-after.png`, so the render can be checked
+without a GUI.
 
 ## Play in the browser
 

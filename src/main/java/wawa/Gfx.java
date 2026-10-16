@@ -74,13 +74,20 @@ final class Gfx {
 			}
 		}
 		// ponytail: a glyph is tinted by what lands on its centre only; a half-covered glyph takes all or nothing.
-		for (Img.Glyph gl : t.text) {
+		boolean opaque = argb >>> 24 == 255;
+		t.text.removeIf(gl -> {
 			int mx = (int) (gl.x + gl.width() / 2);
 			int my = (int) (gl.y + gl.height() / 2);
-			if (mx >= x0 && mx < x1 && my >= y0 && my < y1) {
-				gl.argb = over(argb, gl.argb);
+			if (mx < x0 || mx >= x1 || my < y0 || my >= y1) {
+				return false;
 			}
-		}
+			// Opaque paint hides the glyph; tinting it would leave its outline over a textured background.
+			if (opaque) {
+				return true;
+			}
+			gl.argb = over(argb, gl.argb);
+			return false;
+		});
 	}
 
 	void drawImage(Img img, int x, int y) {
@@ -119,13 +126,19 @@ final class Gfx {
 			}
 		}
 		// Glyphs already on the target under this image's pixels (see fillRect).
-		for (Img.Glyph gl : t.text) {
+		t.text.removeIf(gl -> {
 			int mx = (int) (gl.x + gl.width() / 2);
 			int my = (int) (gl.y + gl.height() / 2);
-			if (mx >= x0 && mx < x1 && my >= y0 && my < y1) {
-				gl.argb = over(source(img, mx - dx, my - dy, w, h, alpha), gl.argb);
+			if (mx < x0 || mx >= x1 || my < y0 || my >= y1) {
+				return false;
 			}
-		}
+			int s = source(img, mx - dx, my - dy, w, h, alpha);
+			if (s >>> 24 == 255) {
+				return true;
+			}
+			gl.argb = over(s, gl.argb);
+			return false;
+		});
 		// This image's own glyphs land on top; mirrored images carry none, so they are never mirrored.
 		float sx = aw / (float) img.w;
 		float sy = ah / (float) img.h;
