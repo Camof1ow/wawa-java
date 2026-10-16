@@ -58,6 +58,7 @@ public final class Game extends JFrame {
 	private AreaInfo area;
 	private MonsterTable monsterTable;
 	private MonsterSprite monsterSprites;
+	private HeroSprite heroSprite;
 	private MonsterStats monsterStats;
 	private int heroX = 10;
 	private int heroY = 12;
@@ -146,6 +147,11 @@ public final class Game extends JFrame {
 		if (monsterSprites == null) {
 			monsterSprites = MonsterSprite.load(assetsRoot);
 			monsterStats = MonsterStats.load(MonsterSprite.nativeLib(assetsRoot));
+			try {
+				heroSprite = HeroSprite.load(assetsRoot);
+			} catch (IOException e) {
+				heroSprite = null;
+			}
 		}
 		heroX = map.width / 2;
 		heroY = map.height / 2;
@@ -564,10 +570,19 @@ public final class Game extends JFrame {
 		}
 		int hx = MAP_X + (heroX - camX) * CELL;
 		int hy = MAP_Y + (heroY - camY) * CELL;
-		g.setColor(new Color(250, 210, 90));
-		g.fillOval(hx + 3, hy + 3, CELL - 6, CELL - 6);
-		g.setColor(Color.BLACK);
-		g.drawOval(hx + 3, hy + 3, CELL - 6, CELL - 6);
+		BufferedImage hero = heroSprite == null ? null : heroSprite.standing();
+		if (hero != null) {
+			// Same anchoring and view scale as the monsters: the engine draws the part at its own
+			// size on the 16px grid.
+			int w = Math.max(1, hero.getWidth() * CELL / TILE);
+			int h = Math.max(1, hero.getHeight() * CELL / TILE);
+			g.drawImage(hero, hx + CELL / 2 - w / 2, hy + CELL / 2 - h / 2, w, h, null);
+		} else {
+			g.setColor(new Color(250, 210, 90));
+			g.fillOval(hx + 3, hy + 3, CELL - 6, CELL - 6);
+			g.setColor(Color.BLACK);
+			g.drawOval(hx + 3, hy + 3, CELL - 6, CELL - 6);
+		}
 		bar(g, hx, hy + CELL - 5, (float) heroHp / heroMaxHp, new Color(80, 220, 120));
 	}
 
