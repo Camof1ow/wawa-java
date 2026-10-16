@@ -81,7 +81,9 @@ final class HeroAnim {
 	private static final int[] PREVIEW_KIND = { 2, 0, 3 };
 
 	static Look preview(Item items, int heroClass, int act) {
-		Look l = Look.bare(PREVIEW_KIND[heroClass], 0, act);
+		// Facing down (1), toward the viewer, as the original's new-game screen shows the class; the
+		// command that sets prehero[1] +5 sits in KeyPressGOrderNewGame's undecompiled jump table.
+		Look l = Look.bare(PREVIEW_KIND[heroClass], 1, act);
 		for (int[] e : PREVIEW[heroClass]) {
 			l.looks()[e[0] - 8] = items.look(e[1]);
 			l.colours()[e[0] - 8] = items.colour(e[1]) + e[2];

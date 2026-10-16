@@ -73,6 +73,10 @@ final class SlotScreen {
 	private final HeroAnim heroes;
 	/** Frames drawn so far; hero animations advance on it. */
 	private int ticks;
+	/** DrawGOrderHero's preview act (+7): standing or walking, re-rolled every 16 frames. */
+	private int previewAct = HeroAnim.ACT_STAND;
+	/** Seeded so the selftest's frames stay the same from run to run. */
+	private final java.util.Random previewRand = new java.util.Random(0);
 	private final Summary[] slots;
 	private int slot;
 	private Phase phase = Phase.SELECT;
@@ -345,7 +349,14 @@ final class SlotScreen {
 		sprite(g, 23 + heroClass, 350, 50);
 		// The preview box shows SetGOrderNewGameHero's outfit for the class on prehero[1].
 		g.fillRect(150, 80, 140, 90, 120 << 24);
-		hero(g, HeroAnim.preview(items, heroClass, HeroAnim.ACT_STAND), 220, 150);
+		// DrawGOrderHero: on every 16th frame, when Rand1000() <= 499 (DAT_0004db28), RandRange(0,1)
+		// sets the act to standing or walking; a kind 0 weapon is drawn 4 px right, kind 2 8 px.
+		if ((ticks & 0xf) == 0 && previewRand.nextInt(1000) <= 499) {
+			previewAct = previewRand.nextInt(2) == 0 ? HeroAnim.ACT_STAND : HeroAnim.ACT_WALK;
+		}
+		HeroAnim.Look preview = HeroAnim.preview(items, heroClass, previewAct);
+		int nudge = preview.kind() == 0 ? 4 : preview.kind() == 2 ? 8 : 0;
+		hero(g, preview, 220 + nudge, 150);
 		for (int i = 0; i < 4; i++) {
 			int y = 80 + i * 18;
 			g.fillRect(300, y, 70, 16, off);

@@ -98,6 +98,15 @@ public final class WebMain {
 			}
 			game.key(code);
 		});
+		doc.addEventListener("keyup", e -> {
+			KeyboardEvent k = (KeyboardEvent) e;
+			int code = keyCode(k.getCode(), k.getKey());
+			if (code >= 0) {
+				game.keyUp(code);
+			}
+		});
+		// A key held while the tab loses focus never reports its release.
+		Window.current().addEventListener("blur", e -> game.releaseKeys());
 		ime.addEventListener("keypress", e -> {
 			String key = ((KeyboardEvent) e).getKey();
 			if (key.length() == 1) {

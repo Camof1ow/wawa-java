@@ -11,9 +11,9 @@ Android 게임 와일드 프론티어(`wild.apk`)를 `libwawa.so` 역공학으�
 | 영역 | 내용 | 주요 클래스 |
 |---|---|---|
 | 오프닝 | 로고 3장, 타이틀(Play / Options / Help) | `TitleScreen` |
-| 슬롯 화면 | 저장 슬롯 3개, 이어 하기·삭제, 새 게임 패널(이름·직업·능력치, 기본 이름 "크리스노아") | `SlotScreen` |
-| 맵 | 지역 맵 타일, 몬스터 배치(실제 이름·능력치·스프라이트) | `MapData`, `Tiles`, `MonsterTable`, `MonsterSprite` |
-| 주인공 | 장비 층을 합성한 스프라이트, 서기·걷기·앉기 | `HeroAnim`, `PartSprites` |
+| 슬롯 화면 | 저장 슬롯 3개, 이어 하기·삭제, 새 게임 패널(이름·직업·능력치, 기본 이름 "크리스노아"), 직업 미리보기(정면, 서기·걷기 무작위 전환) | `SlotScreen` |
+| 맵 | 지역 맵 타일(레이어별 팔레트 변형), 몬스터 배치(실제 이름·능력치·스프라이트), 포탈로 맵 이동 | `MapData`, `Tiles`, `AreaInfo`, `MonsterTable`, `MonsterSprite` |
+| 주인공 | 장비 층을 합성한 스프라이트, 서기·걷기·앉기. 키를 누르는 동안 8px/프레임으로 걷고(걷기 애니메이션), 스크립트 걷기·NPC 걷기도 진행 픽셀만큼 부드럽게 그린다. 맨손으로 시작해 스크립트가 주는 무기를 든다 | `HeroAnim`, `PartSprites`, `GameCore` |
 | 이벤트 스크립트 | `eve/*.evk` 해석기: 자막, 대화(얼굴·이름·타자), NPC 유닛, 카메라, 페이드, 흔들기, 선택지 | `EventScript`, `EventRunner`, `TalkBox` |
 | 전투·저장 | 칸 이동, 턴제 전투, 물약, 슬롯 저장·불러오기 | `GameCore`, `Hero`, `Combat` |
 | 입력 | 키보드, 한글 입력기(이름 입력), 마우스 클릭 | `Game`, `WebMain` |
@@ -75,7 +75,7 @@ flowchart LR
 
 | 검증 | 명령 | 기대 결과 |
 |---|---|---|
-| 셀프 테스트 | `java -cp out wawa.Game <wild.apk> --selftest` | `intro frames=1359 running=false map=t01 hero=11,15 var1=1 …`, `slot=0 name=와와 class=1 map=a01 …`, `out/*.png` 14장(2배 크기) |
+| 셀프 테스트 | `java -cp out wawa.Game <wild.apk> --selftest` (먼저 `wawa-slot*.properties` 삭제) | `intro frames=1359 running=false map=t01 hero=11,15 var1=1 …`, `walk frames=22 hero=0,15 dir=2`, `mapmove map=t02 hero=23,14 dir=2 frames=302 …`, `slot=0 name=와와 class=1 map=a01 …`, `out/*.png` 16장(2배 크기) |
 | 맵 전체 로드 | `java -cp out wawa.CheckMapsRun <assets>` | `failures=0` |
 | 디코더 동등성(전환 때 1회) | 옛 AWT 경로와 새 `Img` 경로의 픽셀 비교 | Gsac 132개(4582프레임), PNG 75개, 포즈 2784개, 이벤트 문장 135개에서 차이 0 |
 | 웹 | 로컬 정적 서버에서 타이틀 → 새 게임 → 한글 이름 → 오프닝 → F5 저장 → 새로고침 → 불러오기 | 모두 통과 |
@@ -98,8 +98,9 @@ flowchart LR
 ## 7. 남은 일
 
 **아직 포팅하지 않은 것**
-- **이벤트:** 퀘스트, 버프, 사운드, 확대, 데미지 숫자, GOrder/GMenu 화면이 없다. 맵 이동이 없어 `t02`에 갈 수 없다. 그 밖에 `04`, 엔딩 `8b`, 효과·공격 동작, 맵 오브젝트 `c3`/`d3`, SetCamping `75..a5`가 남았다. 만나면 `[미포팅]` 로그를 남기고 건너뛴다.
-- **게임 시스템:** 인벤토리·장비 화면이 없다. 몬스터는 정지 포즈만 있다. 주인공의 공격·스킬·탈것 동작과 팔레트 변형도 없다.
+- **이벤트:** 퀘스트, 버프, 사운드, 확대, 데미지 숫자, GOrder/GMenu 화면이 없다. 보스·리젠 맵 11곳은 원작에서 `GMenu 0x74`를 거쳐 들어가므로 포트에서는 들어가지 못한다. 그 밖에 `04`, 엔딩 `8b`, 효과·공격 동작, 맵 오브젝트 `c3`/`d3`, SetCamping `75..a5`가 남았다. 만나면 `[미포팅]` 로그를 남기고 건너뛴다.
+- **게임 시스템:** 인벤토리·장비 화면이 없다. 몬스터는 정지 포즈만 있다. 주인공의 공격·스킬·탈것 동작이 없다. 지형 충돌(`CollHeroPath`)이 없어 맵 경계와 몬스터만 막는다.
+- **이동 근사:** 원작은 주인공을 픽셀 좌표로 두지만 포트는 칸 + 진행 픽셀이다. 그래서 키를 떼거나 방향을 바꿀 때 칸 중심까지 마저 걷고(최대 1프레임·8px), 오른쪽·아래로 갈 때 칸이 바뀌는 시점이 1프레임 늦다.
 - **슬롯 화면:** 배경의 캠프 오브젝트(`SetCamping`, `.mbk` 맵 오브젝트)가 없다.
 
 **알려진 화면 문제 (TeaVM 전환 전부터 있음)**

@@ -135,9 +135,21 @@ public final class Game extends JFrame {
 			}
 
 			@Override
+			public void keyReleased(KeyEvent e) {
+				core.keyUp(e.getKeyCode());
+			}
+
+			@Override
 			public void keyTyped(KeyEvent e) {
 				core.typed(e.getKeyChar());
 				repaint();
+			}
+		});
+		// A key held while the window loses focus never reports its release.
+		addWindowFocusListener(new java.awt.event.WindowAdapter() {
+			@Override
+			public void windowLostFocus(java.awt.event.WindowEvent e) {
+				core.releaseKeys();
 			}
 		});
 		addMouseListener(new MouseAdapter() {

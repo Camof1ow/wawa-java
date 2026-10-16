@@ -121,6 +121,15 @@ final class GameCore {
 	private boolean heroActRun;
 	/** Px moved into the next cell (CollHeroPath: 8 a frame straight, 6 diagonal). */
 	private int heroPx;
+	/** KeyPressGamePlay's +0x47: the direction held (0 up, 1 down, 2 left, 3 right), -1 none. */
+	private int heldDir = -1;
+	/** A clicked cell the hero walks to while nothing is held (this port's touch pad), -1 none. */
+	private int clickX = -1;
+	private int clickY;
+	/** CalcHeroRun is driving act 1, as opposed to a phase or an action. */
+	private boolean runWalking;
+	/** InitHeroState's +0x48 = (4 - 0) * 2 px a frame; mounts (12) and the cap (14) are not ported. */
+	private static final int HERO_SPEED = 8;
 	/** A scripted hero walk (83, e3): target cell and the arrival direction fixed at command time. */
 	private int heroGoX = -1;
 	private int heroGoY;
@@ -151,12 +160,11 @@ final class GameCore {
 	private int gold = 300;
 	private int potions = 3;
 	/**
-	 * The weapon a new hero fights with. A new game loads map t01 (KeyPressGOrderNewGame); its event
-	 * script grants sword 168 with the equip flag, but GetGOrderEquipLevel refuses it below level 6.
-	 * The t02 script ("You can use my sword") then grants item 297 (level 1, value 5) with the same
-	 * flag, and that is the first weapon the hero actually equips.
+	 * The weapon a save from before saves recorded weapons holds: that port gave every hero item 297
+	 * from the start. A new hero starts bare-handed (InitHero leaves +8..+0x10 at 0xff for every
+	 * class); t02's script lends 297, takes it back, and t04's gives it for good.
 	 */
-	private static final int STARTING_WEAPON = 297;
+	private static final int OLD_SAVE_WEAPON = 297;
 	private String log = "";
 
 	/** Reads the native library (tables) and builds the title screen; the rest waits for {@link #loadWorld}. */
@@ -225,15 +233,32 @@ final class GameCore {
 		}
 	}
 
-	/** InitHero for a class, holding the weapon a new game first equips. */
+	/** InitHero for a class: bare-handed, whatever the class; the scripts hand out the first weapon. */
 	private void newHero(int heroClass, String name) {
 		hero = new Hero(so, heroClass);
 		hero.name = name;
-		hero.weapon = items.create(STARTING_WEAPON, 0, rng);
+		hero.weapon = null;
 		heroDir = 3;
 		heroInts = new int[0x100];
 		hero.recompute(rng);
 		hero.hp = hero.maxHp;
+	}
+
+	/**
+	 * The weapon a save holds as "id,value", or null when it is empty (bare-handed). A save written
+	 * before weapons were recorded has no such key and held OLD_SAVE_WEAPON.
+	 */
+	private Item.Instance savedWeapon(Properties p) {
+		String w = p.getProperty("weapon");
+		if (w == null) {
+			return items.create(OLD_SAVE_WEAPON, 0, new Random(0));
+		}
+		String[] f = w.split(",");
+		if (f.length != 2) {
+			return null;
+		}
+		int id = Integer.parseInt(f[0]);
+		return new Item.Instance(id, items.type(id), Integer.parseInt(f[1]), items.spread(id));
 	}
 
 	/** Applies what the slot screen asked for. */
@@ -276,8 +301,7 @@ final class GameCore {
 				out[i] = new SlotScreen.Summary(p.getProperty("name", ""),
 						Integer.parseInt(p.getProperty("class", "0")), Integer.parseInt(p.getProperty("level", "1")),
 						Integer.parseInt(p.getProperty("mode", "0")), Integer.parseInt(p.getProperty("playTime", "0")),
-						// The slot hero wears what this port's hero always holds: the starting weapon.
-						HeroAnim.wearing(items, items.create(STARTING_WEAPON, 0, rng), 1, HeroAnim.ACT_STAND));
+						HeroAnim.wearing(items, savedWeapon(p), 1, HeroAnim.ACT_STAND));
 			} catch (NumberFormatException e) {
 				out[i] = null;
 			}
@@ -318,6 +342,9 @@ final class GameCore {
 		heroGoX = -1;
 		changeHeroAct(HeroAnim.ACT_STAND);
 		heroActRun = false;
+		heroPx = 0;
+		runWalking = false;
+		clickX = -1;
 		emotes.clear();
 		log = area.name + " (" + map.width + "x" + map.height + ") 진입.";
 	}
@@ -342,18 +369,24 @@ final class GameCore {
 		tickEffects();
 		calcCamera();
 		if (events.active()) {
+			// SetPhaseHeroStop clears +0x47: a phase stops the player's own walk.
+			stopRun();
 			// CalcGamePlay keeps moving the hero and units while a phase runs; monsters stand still
 			// (SetPhaseHeroStop sets their 0x2000 bit) and the player's input goes to the phase.
 			scriptMoves();
 			events.calcPhase();
 			events.frame();
 		} else {
-			// No phase: the freeze lifts, and this port's hero has no act of its own.
+			// No phase: the freeze lifts. Whatever act a phase left goes back to standing, unless
+			// CalcHeroRun is walking the hero.
 			frozen = false;
 			heroGoX = -1;
 			heroActRun = false;
-			if (heroAct != HeroAnim.ACT_STAND) {
-				changeHeroAct(HeroAnim.ACT_STAND);
+			if (!runWalking) {
+				heroPx = 0;
+				if (heroAct != HeroAnim.ACT_STAND) {
+					changeHeroAct(HeroAnim.ACT_STAND);
+				}
 			}
 			events.frame();
 			initHeroState();
@@ -374,10 +407,74 @@ final class GameCore {
 		hero.recompute(rng);
 	}
 
-	/** CalcHeroRun: commit movement, clamped to the map. */
+	/**
+	 * CalcHeroRun: while a direction is held (+0x47) the hero walks, act 1, HERO_SPEED px a frame
+	 * through MoveHeroPath, and with nothing held a walk goes back to standing. This port keeps the
+	 * hero on cells, so a step that has started finishes at the next cell centre: letting go or
+	 * turning mid-step takes at most one frame longer than the original's free pixel position.
+	 */
 	private void calcHeroRun() {
-		heroX = Math.max(0, Math.min(map.width - 1, heroX));
-		heroY = Math.max(0, Math.min(map.height - 1, heroY));
+		if (heroPx == 0) {
+			int dir = heldDir >= 0 ? heldDir : clickDir();
+			if (dir < 0) {
+				if (runWalking) {
+					runWalking = false;
+					changeHeroAct(HeroAnim.ACT_STAND);
+				}
+			} else {
+				heroDir = dir;
+				if (!runWalking || heroAct != HeroAnim.ACT_WALK) {
+					runWalking = true;
+					changeHeroAct(HeroAnim.ACT_WALK);
+				}
+				int nx = heroX + DIR_STEP[dir][0];
+				int ny = heroY + DIR_STEP[dir][1];
+				if (map.inBounds(nx, ny) && monsterAt(nx, ny) == null) {
+					heroPx = HERO_SPEED;
+				} else {
+					clickX = -1;
+					// Blocked: the hero walks in place, and MoveHeroPath still checks the cell it
+					// stands on with the new facing, which is how a portal on the map edge is taken.
+					takeExit();
+				}
+			}
+		} else {
+			heroPx += HERO_SPEED;
+			if (heroPx >= TILE) {
+				heroPx = 0;
+				heroX += DIR_STEP[heroDir][0];
+				heroY += DIR_STEP[heroDir][1];
+				if (heroX == clickX && heroY == clickY) {
+					clickX = -1;
+				}
+				takeExit();
+			}
+		}
+	}
+
+	/** The way to the clicked cell, horizontal first; -1 once there or with no click. */
+	private int clickDir() {
+		if (clickX < 0) {
+			return -1;
+		}
+		int dx = Integer.compare(clickX, heroX);
+		int dy = Integer.compare(clickY, heroY);
+		if (dx == 0 && dy == 0) {
+			clickX = -1;
+			return -1;
+		}
+		return dx != 0 ? (dx < 0 ? 2 : 3) : (dy < 0 ? 0 : 1);
+	}
+
+	/** A phase took the hero: the held direction and the click target are dropped. */
+	private void stopRun() {
+		heldDir = -1;
+		clickX = -1;
+		if (runWalking) {
+			runWalking = false;
+			heroPx = 0;
+			changeHeroAct(HeroAnim.ACT_STAND);
+		}
 	}
 
 	/** PostHeroValue/PostMonsValue: write the pending stat changes into the records. */
@@ -528,10 +625,10 @@ final class GameCore {
 			return;
 		}
 		switch (code) {
-			case Keys.LEFT, Keys.A -> step(-1, 0);
-			case Keys.RIGHT, Keys.D -> step(1, 0);
-			case Keys.UP, Keys.W -> step(0, -1);
-			case Keys.DOWN, Keys.S -> step(0, 1);
+			case Keys.LEFT, Keys.A -> hold(2);
+			case Keys.RIGHT, Keys.D -> hold(3);
+			case Keys.UP, Keys.W -> hold(0);
+			case Keys.DOWN, Keys.S -> hold(1);
 			case Keys.ENTER, Keys.SPACE -> talkToNpc();
 			case Keys.K1 -> attackNearest();
 			case Keys.K2 -> drinkPotion();
@@ -553,6 +650,31 @@ final class GameCore {
 			default -> {
 			}
 		}
+	}
+
+	/** KeyPressGamePlay: a direction key sets +0x47 (repeats while held change nothing). */
+	private void hold(int dir) {
+		heldDir = dir;
+		clickX = -1;
+	}
+
+	/** The key's release: letting go of the held direction clears +0x47. */
+	void keyUp(int code) {
+		int dir = switch (code) {
+			case Keys.UP, Keys.W -> 0;
+			case Keys.DOWN, Keys.S -> 1;
+			case Keys.LEFT, Keys.A -> 2;
+			case Keys.RIGHT, Keys.D -> 3;
+			default -> -1;
+		};
+		if (dir >= 0 && dir == heldDir) {
+			heldDir = -1;
+		}
+	}
+
+	/** The window lost focus: no release will arrive for a key still down. */
+	void releaseKeys() {
+		heldDir = -1;
 	}
 
 	private static int keyToMapIndex(int code) {
@@ -585,10 +707,13 @@ final class GameCore {
 		if (target != null && !target.npc && Math.abs(gx - heroX) <= 1 && Math.abs(gy - heroY) <= 1) {
 			attack(target);
 		} else {
-			walkTo(gx, gy);
+			// Walked to frame by frame by CalcHeroRun, like a held direction.
+			clickX = gx;
+			clickY = gy;
 		}
 	}
 
+	/** One instant cell move; only the selftest's combat drive still uses it (players walk through CalcHeroRun). */
 	private void step(int dx, int dy) {
 		int nx = heroX + dx;
 		int ny = heroY + dy;
@@ -798,12 +923,30 @@ final class GameCore {
 
 	/** CalcCamera's hero target: its position 20 px up. */
 	private int[] heroTarget() {
-		return new int[] { heroX * TILE + TILE / 2, heroY * TILE + TILE / 2 - 20 };
+		return new int[] { heroX * TILE + TILE / 2 + heroOffX(), heroY * TILE + TILE / 2 - 20 + heroOffY() };
+	}
+
+	/** The px the hero has walked toward its next cell, which DrawHeroAnim's position includes. */
+	private int heroOffX() {
+		return heroPx == 0 ? 0 : DIR_STEP[heroDir][0] * heroPx;
+	}
+
+	private int heroOffY() {
+		return heroPx == 0 ? 0 : DIR_STEP[heroDir][1] * heroPx;
+	}
+
+	/** The px a unit has walked toward its script target. */
+	private static int unitOffX(Monster m) {
+		return m.goX < 0 ? 0 : Integer.compare(m.goX, m.x) * m.goPx;
+	}
+
+	private static int unitOffY(Monster m) {
+		return m.goX < 0 ? 0 : Integer.compare(m.goY, m.y) * m.goPx;
 	}
 
 	/** A unit's target: its position lifted by its kind's height (DAT_01419794, taken as DrawImoticon's 0xc08d4). */
 	private int[] unitTarget(Monster m) {
-		return new int[] { m.x * TILE + TILE / 2, m.y * TILE + TILE / 2 - unitHeight(m) };
+		return new int[] { m.x * TILE + TILE / 2 + unitOffX(m), m.y * TILE + TILE / 2 - unitHeight(m) + unitOffY(m) };
 	}
 
 	private int unitHeight(Monster m) {
@@ -941,8 +1084,8 @@ final class GameCore {
 			if (m.fade >= 4) {
 				continue;
 			}
-			int cx = ox + m.x * CELL + CELL / 2;
-			int cy = oy + m.y * CELL + CELL / 2;
+			int cx = ox + m.x * CELL + CELL / 2 + unitOffX(m) * CELL / TILE;
+			int cy = oy + m.y * CELL + CELL / 2 + unitOffY(m) * CELL / TILE;
 			// InitMonsOne puts the monster's position at the cell centre and DrawMonsAnim draws every
 			// part relative to it, so the pose's anchor goes there; the view scale carries over.
 			PartSprites.Pose pose = monsterSprites == null ? null
@@ -957,8 +1100,8 @@ final class GameCore {
 				bar(g, cx - CELL / 2 + 2, cy + CELL / 2 - 5, (float) m.hp / m.maxHp, 0xffdc3c3c);
 			}
 		}
-		int hx = ox + heroX * CELL + CELL / 2;
-		int hy = oy + heroY * CELL + CELL / 2;
+		int hx = ox + heroX * CELL + CELL / 2 + heroOffX() * CELL / TILE;
+		int hy = oy + heroY * CELL + CELL / 2 + heroOffY() * CELL / TILE;
 		if (heroFade < 4) {
 			// DrawHeroAnim: the hero's position is the cell centre, as for monsters.
 			try {
@@ -1231,12 +1374,13 @@ final class GameCore {
 			return;
 		}
 		if (heroAct == HeroAnim.ACT_WALK) {
-			heroPx += heroDir >= 4 ? 6 : 8;
-			if (heroPx >= TILE) {
-				heroPx -= TILE;
-				int nx = heroX + DIR_STEP[heroDir][0];
-				int ny = heroY + DIR_STEP[heroDir][1];
-				if (map.inBounds(nx, ny)) {
+			int nx = heroX + DIR_STEP[heroDir][0];
+			int ny = heroY + DIR_STEP[heroDir][1];
+			// Against the map edge CollHeroPath makes no progress, so nothing accumulates either.
+			if (map.inBounds(nx, ny)) {
+				heroPx += heroDir >= 4 ? 6 : 8;
+				if (heroPx >= TILE) {
+					heroPx -= TILE;
 					heroX = nx;
 					heroY = ny;
 				}
@@ -1978,6 +2122,7 @@ final class GameCore {
 			p.setProperty("exp", String.valueOf(hero.exp));
 			p.setProperty("stats", hero.con + "," + hero.dex + "," + hero.str + "," + hero.intel);
 			p.setProperty("vars", vars(events.vars));
+			p.setProperty("weapon", hero.weapon == null ? "" : hero.weapon.id() + "," + hero.weapon.value());
 			StringBuilder ints = new StringBuilder();
 			for (int i = 0; i < heroInts.length; i++) {
 				if (heroInts[i] != 0) {
@@ -2061,6 +2206,7 @@ final class GameCore {
 			hero.dex = Integer.parseInt(st[1]);
 			hero.str = Integer.parseInt(st[2]);
 			hero.intel = Integer.parseInt(st[3]);
+			hero.weapon = savedWeapon(p);
 			hero.recompute(rng);
 			hero.hp = Math.min(hero.maxHp, Integer.parseInt(p.getProperty("hp", String.valueOf(hero.maxHp))));
 			monsters.clear();
@@ -2293,11 +2439,19 @@ final class GameCore {
 		writeFrame(sink, "intro-end.png");
 		System.out.println("intro frames=" + tick + " running=" + events.active() + " map=" + mapCode
 				+ " hero=" + heroX + "," + heroY + " var1=" + events.vars.get(1) + " notPorted=" + notPortedSeen);
-		// Walk west into t01's exit (column 0, rows 3..22): MoveGameMap puts the hero on t02's
-		// portal 0 at the east edge, same row, facing west; then t02's events run to the end.
-		for (int i = 0; i < 15 && "t01".equals(mapCode); i++) {
-			key(Keys.LEFT);
+		// Hold left into t01's exit (column 0, rows 3..22). CalcHeroRun walks 8 px a frame, so the
+		// 11 cells from x=11 take 22 frames; frame 1 is caught mid-step. The exit event runs, then
+		// MoveGameMap puts the hero on t02's portal 0 at the east edge, same row, facing west.
+		key(Keys.LEFT);
+		int walkTicks = 0;
+		while ("t01".equals(mapCode) && !events.active() && walkTicks < 200) {
+			gameTick();
+			if (++walkTicks == 1) {
+				writeFrame(sink, "walk.png");
+			}
 		}
+		keyUp(Keys.LEFT);
+		System.out.println("walk frames=" + walkTicks + " hero=" + heroX + "," + heroY + " dir=" + heroDir);
 		int moveTicks = 0;
 		while (events.active() && moveTicks < 8000) {
 			gameTick();
@@ -2309,11 +2463,10 @@ final class GameCore {
 		System.out.println("mapmove map=" + mapCode + " hero=" + heroX + "," + heroY + " dir=" + heroDir
 				+ " frames=" + moveTicks + " running=" + events.active());
 		loadMap(MAP_CODES[0]);
-		int[] keys = {
-			Keys.RIGHT, Keys.RIGHT, Keys.DOWN, Keys.DOWN, Keys.RIGHT, Keys.RIGHT, Keys.RIGHT
-		};
-		for (int k : keys) {
-			key(k);
+		// The combat drive moves a cell at a time without ticking, so it steps directly.
+		int[][] moves = { { 1, 0 }, { 1, 0 }, { 0, 1 }, { 0, 1 }, { 1, 0 }, { 1, 0 }, { 1, 0 } };
+		for (int[] mv : moves) {
+			step(mv[0], mv[1]);
 		}
 		Monster target = nearestMonster();
 		int guard = 0;
