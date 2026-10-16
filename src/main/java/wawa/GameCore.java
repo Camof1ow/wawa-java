@@ -40,7 +40,6 @@ final class GameCore {
 	/** Time played in this slot; slots store it in DrawPopupSlot's 1/12 s ticks. */
 	private long playMillis;
 	private String mapCode = MAP_CODES[0];
-	private Img heroPortrait;
 	private MapData map;
 	/** LoadGameBlock's collision grid for {@link #map}. */
 	private BlockGrid block;
@@ -247,8 +246,6 @@ final class GameCore {
 
 	/** Everything the slot screen and the field need; may run while the logos play. */
 	void loadWorld() throws IOException {
-		Gsac face = Gsac.load(assets, "assets/img/face00.png");
-		heroPortrait = face.frame(0);
 		items = new Item(so);
 		newHero(0, "");
 
@@ -1193,13 +1190,12 @@ final class GameCore {
 
 		drawTiles(g);
 
-		g.drawImage(heroPortrait, 2, 2, 22, 22);
 		int from = hero.levelExp(hero.level);
 		String expText = hero.level >= Hero.MAX_LEVEL ? "MAX"
 				: (hero.exp - from) + "/" + (hero.levelExp(hero.level + 1) - from);
 		// The original bitmap font is wider than the old 12 pt one: double spaces keep this on one line.
 		g.drawString("Lv" + hero.level + " (" + expText + "EXP)  HP " + hero.hp + "/" + hero.maxHp
-				+ "  ATK " + hero.power() + "  골드 " + hero.inv.gold + "  물약 " + potionCount(), 28, 5, 0xffe6dcc8);
+				+ "  ATK " + hero.power() + "  골드 " + hero.inv.gold + "  물약 " + potionCount(), MAP_X, 5, 0xffe6dcc8);
 		int foot = MAP_Y + VIEW_H * CELL;
 		g.drawString(area.name + "  밝기 " + area.brightness + (area.rainy() ? "  비" : ""),
 				MAP_X, foot - 17, 0xffb4d2f0);
