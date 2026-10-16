@@ -75,6 +75,16 @@ final class GameCore {
 	/** The event interpreter, its text box, and the stage it moves ({@link Stage}). */
 	private TalkBox talk;
 	private EventRunner events;
+	/**
+	 * The exit MoveGameMap held back for GMenu 0x74, the boss/regen warning, while it is open;
+	 * null otherwise. The field stands still meanwhile, as CalcGMenu runs in CalcGamePlay's place.
+	 */
+	private AreaInfo.Portal bossGate;
+	/** GMenu 0x74's EUC-KR strings: title, text, and the Enter / Cancel button labels. */
+	private static final int GATE_TITLE = 0xd22e8;
+	private static final int GATE_TEXT = 0xd22f8;
+	private static final int GATE_ENTER = 0xd2b10;
+	private static final int GATE_CANCEL = 0xd2bf0;
 	private Gsac imoticon;
 	/**
 	 * DrawFade's value (wawamain+0x2ec0): 1..7 darken by v/8, 8 and up cover the view, negative
@@ -222,7 +232,9 @@ final class GameCore {
 	void tick() {
 		if (!selecting) {
 			playMillis += delay;
-			gameTick();
+			if (bossGate == null) {
+				gameTick();
+			}
 		}
 	}
 
@@ -702,6 +714,21 @@ final class GameCore {
 			}
 			return;
 		}
+		if (bossGate != null) {
+			// ResultGMenu 0x74: Enter saves the slot (SaveSlot) and moves without asking again
+			// (MoveGameMap(i, 0)); Cancel just closes the menu.
+			int r = talk.warningKey(code);
+			if (r >= 0) {
+				AreaInfo.Portal p = bossGate;
+				bossGate = null;
+				talk.clear();
+				if (r == 1) {
+					save();
+					moveGameMap(p, false);
+				}
+			}
+			return;
+		}
 		// KeyPressGamePlay hands every key to KeyPressPhase first; a running phase eats it.
 		if (events.key(code)) {
 			return;
@@ -827,7 +854,7 @@ final class GameCore {
 			AreaInfo.Portal p = exits.get(i);
 			if (p.contains(heroX, heroY) && heroDir == (p.dir() ^ 1)) {
 				if (!events.searchMapMove(i)) {
-					moveGameMap(p);
+					moveGameMap(p, true);
 				}
 				return;
 			}
@@ -835,16 +862,20 @@ final class GameCore {
 	}
 
 	/**
-	 * MoveGameMap(i, 1): the destination's portal receives the hero at the same relative spot,
+	 * MoveGameMap(i, check): the destination's portal receives the hero at the same relative spot,
 	 * scaled to its size, facing into the new map; then the new map's events start.
 	 */
-	private void moveGameMap(AreaInfo.Portal from) {
+	private void moveGameMap(AreaInfo.Portal from, boolean check) {
 		String mob = "assets/eng/mob/" + from.dest().charAt(0) + ".png";
 		try {
-			// A header high nibble of 3 or more marks a boss/regen map, which MoveGameMap enters only
-			// through GMenu 0x74; this port has no such menu, so the hero stays.
-			if (AreaInfo.load(assets, mob, from.dest()).ambience >> 4 >= 3) {
-				notPorted("GMenu 0x74 (" + from.dest() + ")");
+			// A header high nibble of 3 or more marks a boss/regen map. MoveGameMap goes straight in
+			// when GetRegen(1) has a live record for it; this port keeps none, so GMenu 0x74 asks.
+			if (check && AreaInfo.load(assets, mob, from.dest()).ambience >> 4 >= 3) {
+				stopRun();
+				changeHeroAct(HeroAnim.ACT_STAND);
+				talk.startWarning(so.cbytes(GATE_TITLE), so.cbytes(GATE_TEXT), so.cbytes(GATE_ENTER),
+						so.cbytes(GATE_CANCEL));
+				bossGate = from;
 				return;
 			}
 		} catch (IOException e) {
@@ -977,10 +1008,16 @@ final class GameCore {
 		g.drawString(log, MAP_X, OVERLAY_H, 0xfffae696);
 		// One line of the 16 px font is all that fits under the log; the map keys (3..[) stay unlisted.
 		g.drawString("Enter 대화 1 공격 2 물약 F5 저장 F9 불러오기 ESC 종료", MAP_X, OVERLAY_H + 18, 0xffaaa596);
-		if (events.overlay()) {
-			// DrawPhase works on the original 480x320 screen; fit it like the slot screen.
+		if (events.overlay() || bossGate != null) {
+			// DrawPhase and DrawGMenu work on the original 480x320 screen; fit it like the slot screen.
 			Arrays.fill(overlay.px, 0);
-			events.draw(new Gfx(overlay));
+			Gfx og = new Gfx(overlay);
+			if (bossGate != null) {
+				// A GMenu is not a phase: no fast/slow button.
+				talk.draw(og, 0, true);
+			} else {
+				events.draw(og);
+			}
 			g.drawImage(overlay, 0, 0, W, OVERLAY_H);
 		}
 	}
@@ -1955,7 +1992,8 @@ final class GameCore {
 		@Override
 		public void mapExit(int exit) {
 			if (exit < area.portals.size()) {
-				moveGameMap(area.portals.get(exit));
+				// ExitPhase: MoveGameMap(exit, 1), so a boss/regen map asks first here too.
+				moveGameMap(area.portals.get(exit), true);
 			}
 		}
 
@@ -2586,6 +2624,23 @@ final class GameCore {
 		// over the deep sea at (28,9) (tile 5). g_anMonsBlock id 1 (0x2b) stops there; id 66 (0x02,
 		// no bit 0) and id 124 (0) go on, so the x values read 27 28 28.
 		System.out.println("monster-terrain " + chaseFrom(1) + " " + chaseFrom(66) + " " + chaseFrom(124));
+		// GMenu 0x74: z01's east exit (portal 4, x 54, rows 6..10) leads to the regen map a11. Facing
+		// out of it the warning opens instead of the move; right then OK cancels, and OK on Enter
+		// saves and goes in.
+		loadMap("z01");
+		monsters.clear();
+		heroX = 54;
+		heroY = 8;
+		heroDir = 3;
+		takeExit();
+		boolean asked = bossGate != null;
+		writeFrame(sink, "bossgate.png");
+		key(Keys.RIGHT);
+		key(Keys.ENTER);
+		String stayed = mapCode + (bossGate == null ? "" : "(open)");
+		takeExit();
+		key(Keys.ENTER);
+		System.out.println("bossgate asked=" + asked + " cancel=" + stayed + " enter=" + mapCode);
 		new GameCore(assets, storage).writeFrame(sink, "slots-after.png");
 	}
 

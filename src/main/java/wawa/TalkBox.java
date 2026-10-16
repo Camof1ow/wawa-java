@@ -49,8 +49,8 @@ final class TalkBox {
 	/** DrawTalkAnimate's T1V: below 0 hides a face while it is being swapped. */
 	private static final int[] SWAP_VISIBLE = { -1, 3, 2, 1, 0 };
 
-	/** What the box is showing: nothing, dialogue (4), caption (6), notice (7) or choice (8). */
-	enum Kind { NONE, TALK, CAPTION, NOTICE, CHOICE }
+	/** What the box is showing: nothing, dialogue (4), caption (6), notice (7), choice (8) or GMenu 0x74's warning. */
+	enum Kind { NONE, TALK, CAPTION, NOTICE, CHOICE, WARNING }
 
 	/** SetTextboxColor of the notice and choice text, also DrawTextOut's button outline. */
 	private static final int MENU_TEXT = 0x1a2a4300;
@@ -73,6 +73,10 @@ final class TalkBox {
 	private final Img fast;
 	private final Img slow;
 	private final Gsac imenu;
+	/** DrawGMenuTitle's title band is a gorder frame. */
+	private final Gsac gorder;
+	/** GMenu 0x74: its title (gmenu+0x48). */
+	private byte[] warnTitle;
 	private final Map<String, Img> faces = new HashMap<>();
 
 	Kind kind = Kind.NONE;
@@ -121,6 +125,7 @@ final class TalkBox {
 		fast = ResourceFile.image(assets, "assets/talk/btn_fast_base.png");
 		slow = ResourceFile.image(assets, "assets/talk/btn_slow_base.png");
 		imenu = Gsac.loadCompanion(assets, "assets/img/imenu.png");
+		gorder = Gsac.loadCompanion(assets, "assets/img/gorder.png");
 	}
 
 	/** InitTalkScript: n records from d[off + 1]; the first is read at once. */
@@ -168,6 +173,35 @@ final class TalkBox {
 		choiceLabels = labels;
 		cursor = 0;
 		setText(slice(d, off + 1, d[off] & 0xff), 0, 200);
+	}
+
+	/**
+	 * InitGMenu 0x74 (style 3, buttons 0x8100500): the title, the text box clix_gmenu+0x30, 215
+	 * wide, and Enter / Cancel with the cursor (gmenu+0xc) on Enter.
+	 */
+	void startWarning(byte[] title, byte[] body, byte[] enter, byte[] cancel) {
+		clear();
+		kind = Kind.WARNING;
+		warnTitle = title;
+		choiceLabels = new byte[][] { enter, cancel };
+		cursor = 0;
+		setText(body, 0, 215);
+	}
+
+	/**
+	 * KeyPressGMenu with button flag 0x8000000: left / right ('4' / '6') swap the cursor between the
+	 * two buttons, OK gives ResultGMenu(cursor == 0) and the back key (here Escape) ResultGMenu(0).
+	 * Returns 1 for Enter, 0 for Cancel, -1 while the menu stays.
+	 */
+	int warningKey(int code) {
+		if (code == Keys.LEFT || code == Keys.RIGHT || code == Keys.K4 || code == Keys.K6) {
+			cursor ^= 1;
+		} else if (ok(code)) {
+			return cursor == 0 ? 1 : 0;
+		} else if (code == Keys.ESCAPE) {
+			return 0;
+		}
+		return -1;
 	}
 
 	/**
@@ -540,6 +574,7 @@ final class TalkBox {
 			case CAPTION -> drawLines(g, 0, 24, W, H - 48, true, state == 4);
 			case NOTICE -> drawNotice(g);
 			case CHOICE -> drawChoice(g);
+			case WARNING -> drawWarning(g);
 			default -> {
 			}
 		}
@@ -692,6 +727,32 @@ final class TalkBox {
 			int slot = n == 1 ? 1 : n == 2 ? i * 2 : i;
 			button(g, choiceLabels[i], 160 + 65 * slot, 160, cursor == i);
 		}
+	}
+
+	/**
+	 * DrawGMenu for 0x74, style 3. DrawGMenuBack: black 3/8 over the screen, imenu frame 1 at
+	 * clix_imenu+8 (140, 40). DrawGMenuTitle: gorder frame 17 (clix_gorder+0x98) at clix_gmenu+0x10
+	 * (191, 49), 1 px rules in 0x2463a3 over +0x18 (151, 66, 218) and 0x1a2a43 over +0x20 (150, 67,
+	 * 220), the title centred in +0x08 (150, 49, 220, 15). Then black 3/8 over +0x28 (145, 75, 225,
+	 * 140), the text box +0x30 (150, 80, 215, 130) centred both ways (flag 0x11), and the buttons in
+	 * the style-3 slots +0xc0 (160, 220) and +0xd0 (290, 220): Enter lit on cursor 0, Cancel on 1.
+	 */
+	private void drawWarning(Gfx g) {
+		g.fillRect(0, 0, W, H, (3 * 32) << 24);
+		g.drawImage(imenu.frame(1), 140, 40);
+		g.drawImage(gorder.frame(17), 191, 49);
+		g.fillRect(151, 66, 218, 1, rgb(0x2463a300));
+		g.fillRect(150, 67, 220, 1, rgb(MENU_TEXT));
+		drawBytes(g, warnTitle, 0, warnTitle.length, 150 + ((220 - width(warnTitle, 0, warnTitle.length)) >> 1), 49, MENU_TEXT);
+		g.fillRect(145, 75, 225, 140, (3 * 32) << 24);
+		int n = Math.min(lines.size(), (130 + 2) / 17);
+		int y = 80 + ((130 - 17 * n + 2) >> 1);
+		for (int k = 0; k < n; k++) {
+			int[] ln = lines.get(k);
+			drawBytes(g, text, ln[0], ln[1], 150 + ((215 - width(text, ln[0], ln[1])) >> 1), y + 17 * k, MENU_TEXT);
+		}
+		button(g, choiceLabels[0], 160, 220, cursor == 0);
+		button(g, choiceLabels[1], 290, 220, cursor == 1);
 	}
 
 	/** DrawGMenuBack(0, 0, 1): DrawWholeFade (black 3/8 over the screen), then imenu frame 2 at x 140. */
