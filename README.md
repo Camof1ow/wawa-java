@@ -37,9 +37,11 @@ logic is re-derived from the native code, and every format is decoded from the s
 ## What is not finished
 
 - **Inventory and equipment.** Monsters get InitMonsAbility's stats at their real level and the hero
-  follows InitHero / InitHeroState / InitHeroLevelUp (`Hero`, `Combat`). The hero holds item 297, the
-  first weapon the t02 event script equips on a new game, because map exits are not ported and t02
-  cannot be reached yet; there is no inventory, armour or equip screen.
+  follows InitHero / InitHeroState / InitHeroLevelUp (`Hero`, `Combat`). The hero record's items are
+  ported as the original keeps them (`Inventory`: 50 equipment instances and 305 stack slots, gold),
+  with AddItem / DelItem / SortItem / GetItemCount and the event item commands; worn gear sets
+  attack, defence and the hero's looks. There is no inventory screen or shop yet, and gear options,
+  runes, sockets, cooldowns and durability loss are not ported.
 - **Event script gaps.** Quests, buffs, sound, zoom, map exit, area and object triggers, and
   effect/attack actions are not ported, nor the quest offer (GMenu 100), the shops (GOrder 0xd)
   and the quest board (GOrder 8); a script that reaches one logs `[미포팅]` and carries on.
@@ -114,7 +116,7 @@ npx http-server web    # or any static server; the page asks for your wild.apk o
 | `src/main/java/wawa/{MonsterTable,MonsterData,MonsterStats,MonsterSprite,MonsterAnim}.java` | monsters |
 | `src/main/java/wawa/{PartSprites,HeroAnim}.java` | dat part composition shared by monsters and the hero; hero outfit layers |
 | `src/main/java/wawa/{EventScript,EventRunner,TalkBox}.java` | event tables and length rules, the phase interpreter, the dialogue box |
-| `src/main/java/wawa/{Hero,Item,Combat}.java` | hero record, item tables, hit resolution |
+| `src/main/java/wawa/{Hero,Item,Inventory,Combat}.java` | hero record, item tables, the hero's items, hit resolution |
 | `src/main/java/wawa/{Gsac,RenderAtlas,ElfImage,ResourceFile}.java` | asset decoding |
 | `src/main/java/wawa/{CheckMaps,CheckMapsRun,ExtractAll,MatchSprite,FindBySize}.java` | tools |
 | `web/index.html`, `web/src/wawa/WebMain.java`, `build.gradle.kts`, `.github/workflows/pages.yml` | browser page, its TeaVM entry point, the TeaVM build and the Pages workflow |

@@ -174,8 +174,9 @@ final class GameCore {
 	private static final int[][] DIR_STEP = {
 		{ 0, -1 }, { 0, 1 }, { -1, 0 }, { 1, 0 }, { 1, -1 }, { -1, 1 }, { -1, -1 }, { 1, 1 }, { 0, 0 }
 	};
-	private int gold = 300;
-	private int potions = 3;
+	/** 하급 포션..특급 포션: the HP potions the 2 key drinks, cheapest first. */
+	private static final int POTION = 233;
+	private static final int LAST_POTION = 238;
 	/**
 	 * The weapon a save from before saves recorded weapons holds: that port gave every hero item 297
 	 * from the start. A new hero starts bare-handed (InitHero leaves +8..+0x10 at 0xff for every
@@ -254,9 +255,9 @@ final class GameCore {
 
 	/** InitHero for a class: bare-handed, whatever the class; the scripts hand out the first weapon. */
 	private void newHero(int heroClass, String name) {
-		hero = new Hero(so, heroClass);
+		// InitHero clears the whole record: no gold, an empty bag, InitHero's capacities.
+		hero = new Hero(so, items, heroClass);
 		hero.name = name;
-		hero.weapon = null;
 		heroDir = 3;
 		heroInts = new int[0x100];
 		hero.recompute(rng);
@@ -264,20 +265,40 @@ final class GameCore {
 	}
 
 	/**
-	 * The weapon a save holds as "id,value", or null when it is empty (bare-handed). A save written
-	 * before weapons were recorded has no such key and held OLD_SAVE_WEAPON.
+	 * A save's items: "gold", "caps", "equip" and "stacks" (Inventory's texts). A save from before
+	 * the inventory has "weapon" instead ("id,value", empty when bare-handed, missing in saves older
+	 * still, which held OLD_SAVE_WEAPON) and a "potions" count: they come back as that weapon worn
+	 * and as many 하급 포션.
 	 */
-	private Item.Instance savedWeapon(Properties p) {
+	private void readInventory(Properties p, Inventory inv) {
+		inv.gold = Integer.parseInt(p.getProperty("gold", "0"));
+		String eq = p.getProperty("equip");
+		if (eq != null) {
+			inv.readCaps(p.getProperty("caps", ""));
+			inv.readEquip(eq);
+			inv.readStacks(p.getProperty("stacks", ""));
+			return;
+		}
 		String w = p.getProperty("weapon");
+		Item.Equip weapon = null;
 		if (w == null) {
-			return items.create(OLD_SAVE_WEAPON, 0, new Random(0));
+			weapon = items.create(OLD_SAVE_WEAPON, 0, new Random(0));
+		} else {
+			String[] f = w.split(",");
+			if (f.length == 2) {
+				int id = Integer.parseInt(f[0]);
+				weapon = new Item.Equip(id, items.type(id), Integer.parseInt(f[1]), items.spread(id), items.level(id),
+						items.durability(id) * 10, 0, 0);
+			}
 		}
-		String[] f = w.split(",");
-		if (f.length != 2) {
-			return null;
+		if (weapon != null) {
+			weapon.slot = 1;
+			inv.equip[0] = weapon;
 		}
-		int id = Integer.parseInt(f[0]);
-		return new Item.Instance(id, items.type(id), Integer.parseInt(f[1]), items.spread(id));
+		int potions = Integer.parseInt(p.getProperty("potions", "0"));
+		if (potions > 0) {
+			inv.add(POTION, potions, 0, true, rng);
+		}
 	}
 
 	/** Applies what the slot screen asked for. */
@@ -317,10 +338,13 @@ final class GameCore {
 				continue;
 			}
 			try {
-				out[i] = new SlotScreen.Summary(p.getProperty("name", ""),
-						Integer.parseInt(p.getProperty("class", "0")), Integer.parseInt(p.getProperty("level", "1")),
-						Integer.parseInt(p.getProperty("mode", "0")), Integer.parseInt(p.getProperty("playTime", "0")),
-						HeroAnim.wearing(items, savedWeapon(p), 1, HeroAnim.ACT_STAND));
+				int heroClass = Integer.parseInt(p.getProperty("class", "0"));
+				Inventory inv = new Inventory(items);
+				readInventory(p, inv);
+				out[i] = new SlotScreen.Summary(p.getProperty("name", ""), heroClass,
+						Integer.parseInt(p.getProperty("level", "1")), Integer.parseInt(p.getProperty("mode", "0")),
+						Integer.parseInt(p.getProperty("playTime", "0")),
+						HeroAnim.wearing(items, inv.worn(), heroClass, 1, HeroAnim.ACT_STAND));
 			} catch (NumberFormatException e) {
 				out[i] = null;
 			}
@@ -691,7 +715,7 @@ final class GameCore {
 	private void knockedOutCheck() {
 		if (hero.hp <= 0) {
 			hero.hp = hero.maxHp;
-			gold = Math.max(0, gold - 50);
+			hero.inv.gold = Math.max(0, hero.inv.gold - 50);
 			heroX = 10;
 			heroY = 12;
 			log = "쓰러졌다. 골드 50을 잃고 마을로 복귀.";
@@ -956,10 +980,11 @@ final class GameCore {
 		if (m.hp <= 0) {
 			monsters.remove(m);
 			int reward = 20 + rng.nextInt(40);
-			gold += reward;
+			hero.inv.gold += reward;
 			int levels = hero.gainExp(hero.expFor(m.level, false), rng);
+			// The port's drop until monsters drop their own items: now and then a 하급 포션.
 			if (rng.nextInt(3) == 0) {
-				potions++;
+				hero.inv.add(POTION, 1, 0, false, rng);
 			}
 			log += " 처치. 골드 +" + reward + (levels > 0 ? " 레벨 " + hero.level + " 달성!" : "");
 		} else {
@@ -971,15 +996,29 @@ final class GameCore {
 		}
 	}
 
+	/**
+	 * The 2 key: FuncUseItem on the cheapest HP potion held. Its global phase (record +0) applies
+	 * the effect, then DelItem takes one. The cooldown (hero+0x388) is not ported.
+	 */
 	private void drinkPotion() {
-		if (potions <= 0) {
-			log = "회복 물약이 없다.";
-			return;
+		for (int id = POTION; id <= LAST_POTION; id++) {
+			if (hero.inv.count(id, -1) > 0) {
+				int before = hero.hp;
+				events.execPhase(2, items.script(id), true);
+				hero.inv.remove(id, 1, -1);
+				log = items.name(id) + " 사용. HP +" + (hero.hp - before);
+				return;
+			}
 		}
-		potions--;
-		int healed = Math.min(40, hero.maxHp - hero.hp);
-		hero.hp += healed;
-		log = "물약 사용. HP +" + healed;
+		log = "회복 물약이 없다.";
+	}
+
+	private int potionCount() {
+		int n = 0;
+		for (int id = POTION; id <= LAST_POTION; id++) {
+			n += hero.inv.count(id, -1);
+		}
+		return n;
 	}
 
 	/** Draws the current frame on a {@link #W} x {@link #H} canvas. */
@@ -1000,7 +1039,7 @@ final class GameCore {
 				: (hero.exp - from) + "/" + (hero.levelExp(hero.level + 1) - from);
 		// The original bitmap font is wider than the old 12 pt one: double spaces keep this on one line.
 		g.drawString("Lv" + hero.level + " (" + expText + "EXP)  HP " + hero.hp + "/" + hero.maxHp
-				+ "  ATK " + hero.power() + "  골드 " + gold + "  물약 " + potions, 28, 5, 0xffe6dcc8);
+				+ "  ATK " + hero.power() + "  골드 " + hero.inv.gold + "  물약 " + potionCount(), 28, 5, 0xffe6dcc8);
 		int foot = MAP_Y + VIEW_H * CELL;
 		g.drawString(area.name + "  밝기 " + area.brightness + (area.rainy() ? "  비" : ""),
 				MAP_X, foot - 17, 0xffb4d2f0);
@@ -1149,7 +1188,7 @@ final class GameCore {
 	}
 
 	private HeroAnim.Look heroLook() {
-		return HeroAnim.wearing(items, hero.weapon, heroDir, heroAct);
+		return HeroAnim.wearing(items, hero.inv.worn(), hero.heroClass, heroDir, heroAct);
 	}
 
 	/** The ani step a unit draws: its own step, counted back from the last for a reversed entry. */
@@ -2123,27 +2162,43 @@ final class GameCore {
 			}
 		}
 
+		/**
+		 * AnalysisPhaseItem hi 1: stacks are forced in, and only a range with no room at all refuses
+		 * (result 3). Equipment makes one instance (flags bit 0: grade 0 with sockets, else none) and
+		 * with bit 1 is put on at once in its type's slot when the level and the slot allow.
+		 */
 		@Override
 		public boolean giveItem(int id, int count, int flags) {
-			Item.Instance it = items.create(id, 0, rng);
-			// GetGOrderEquipLevel refuses gear above the hero's level; there is no inventory to
-			// hold anything else yet, so only equippable weapons stay with the hero.
-			if ((flags & 2) != 0 && it.type() >= 1 && it.type() <= 3 && hero.level >= items.level(id)) {
-				hero.weapon = it;
+			Inventory inv = hero.inv;
+			int type = items.type(id);
+			if (!Item.equipment(type)) {
+				int left = inv.add(id, count, 0, true, rng);
+				inv.sort();
+				if (left < 0) {
+					return false;
+				}
+				log = items.name(id) + " " + (count - left) + "개 획득";
+				return true;
+			}
+			int i = inv.add(id, count, (flags & 1) != 0 ? 0 : -1, true, rng);
+			if (i < 0) {
+				return false;
+			}
+			Item.Equip e = inv.equip[i];
+			inv.sort();
+			if ((flags & 2) != 0 && inv.wear(e, Inventory.slotFor(type), hero.level)) {
 				hero.recompute(rng);
-				log = "무기 장착: #" + id;
+				log = items.name(id) + " 장착";
 			} else {
-				log = "아이템 획득: #" + id + " x" + count;
+				log = items.name(id) + " 획득";
 			}
 			return true;
 		}
 
 		@Override
 		public void takeItem(int id, int count) {
-			if (hero.weapon != null && hero.weapon.id() == id) {
-				hero.weapon = null;
-				hero.recompute(rng);
-			}
+			hero.inv.remove(id, count, -1);
+			hero.recompute(rng);
 		}
 
 		@Override
@@ -2152,7 +2207,7 @@ final class GameCore {
 		}
 
 		/**
-		 * Kind-4 integers from hero+0xa4: 2 level (+0xac), 3 HP (+0xb0), 4 max HP (+0xb4), 6 max MP
+		 * Kind-4 integers from hero+0xa4: 0 gold (+0xa4), 2 level (+0xac), 3 HP (+0xb0), 4 max HP (+0xb4), 6 max MP
 		 * (+0xbc) — InitHeroState writes +0xb4 and +0xbc (max MP = pow112(INT) * 6 >> 4, as
 		 * {@link Hero#maxMp}), and a01 sets HP to hero[4] / 5. The maxima are derived values, so
 		 * writes to them do not stick; MP (+0xb8) and the rest have no field here and are kept as is.
@@ -2160,6 +2215,7 @@ final class GameCore {
 		@Override
 		public int heroInt(int i) {
 			return switch (i) {
+				case 0 -> hero.inv.gold;
 				case 2 -> hero.level;
 				case 3 -> hero.hp;
 				case 4 -> hero.maxHp;
@@ -2171,6 +2227,7 @@ final class GameCore {
 		@Override
 		public void setHeroInt(int i, int v) {
 			switch (i) {
+				case 0 -> hero.inv.gold = v;
 				case 2 -> hero.level = v;
 				case 3 -> hero.hp = Math.min(hero.maxHp, v);
 				case 4, 6 -> {
@@ -2181,7 +2238,7 @@ final class GameCore {
 
 		@Override
 		public int itemCount(int id) {
-			return hero.weapon != null && hero.weapon.id() == id ? 1 : 0;
+			return hero.inv.held(id);
 		}
 
 		@Override
@@ -2239,13 +2296,14 @@ final class GameCore {
 			p.setProperty("x", String.valueOf(heroX));
 			p.setProperty("y", String.valueOf(heroY));
 			p.setProperty("hp", String.valueOf(hero.hp));
-			p.setProperty("gold", String.valueOf(gold));
-			p.setProperty("potions", String.valueOf(potions));
+			p.setProperty("gold", String.valueOf(hero.inv.gold));
+			p.setProperty("caps", hero.inv.capText());
+			p.setProperty("equip", hero.inv.equipText());
+			p.setProperty("stacks", hero.inv.stackText());
 			p.setProperty("level", String.valueOf(hero.level));
 			p.setProperty("exp", String.valueOf(hero.exp));
 			p.setProperty("stats", hero.con + "," + hero.dex + "," + hero.str + "," + hero.intel);
 			p.setProperty("vars", vars(events.vars));
-			p.setProperty("weapon", hero.weapon == null ? "" : hero.weapon.id() + "," + hero.weapon.value());
 			StringBuilder ints = new StringBuilder();
 			for (int i = 0; i < heroInts.length; i++) {
 				if (heroInts[i] != 0) {
@@ -2319,8 +2377,7 @@ final class GameCore {
 			loadMap(p.getProperty("map", MAP_CODES[0]));
 			heroX = Integer.parseInt(p.getProperty("x", "10"));
 			heroY = Integer.parseInt(p.getProperty("y", "12"));
-			gold = Integer.parseInt(p.getProperty("gold", "300"));
-			potions = Integer.parseInt(p.getProperty("potions", "3"));
+			readInventory(p, hero.inv);
 			hero.level = Integer.parseInt(p.getProperty("level", "1"));
 			hero.exp = Integer.parseInt(p.getProperty("exp", String.valueOf(hero.levelExp(hero.level))));
 			String[] st = p.getProperty("stats", hero.con + "," + hero.dex + "," + hero.str
@@ -2329,7 +2386,6 @@ final class GameCore {
 			hero.dex = Integer.parseInt(st[1]);
 			hero.str = Integer.parseInt(st[2]);
 			hero.intel = Integer.parseInt(st[3]);
-			hero.weapon = savedWeapon(p);
 			hero.recompute(rng);
 			hero.hp = Math.min(hero.maxHp, Integer.parseInt(p.getProperty("hp", String.valueOf(hero.maxHp))));
 			monsters.clear();
@@ -2611,7 +2667,7 @@ final class GameCore {
 		writeFrame(sink, "selftest.png");
 		System.out.println("slot=" + slotIndex + " name=" + hero.name + " class=" + hero.heroClass
 				+ " map=" + mapCode + " hero=" + heroX + "," + heroY + " lv=" + hero.level + " exp=" + hero.exp
-				+ " hp=" + hero.hp + "/" + hero.maxHp + " atk=" + hero.power() + " gold=" + gold
+				+ " hp=" + hero.hp + "/" + hero.maxHp + " atk=" + hero.power() + " gold=" + hero.inv.gold
 				+ " monsters=" + monsters.size() + " log=" + log);
 		// LoadGameBlock's terrain on t01 (no monsters): holding right at (27,10) the deep sea stops the
 		// hero, with no gap within two cells up or down; holding down at (15,17) the rock at (15,18)
@@ -2641,6 +2697,33 @@ final class GameCore {
 		takeExit();
 		key(Keys.ENTER);
 		System.out.println("bossgate asked=" + asked + " cancel=" + stayed + " enter=" + mapCode);
+		// Inventory rules: 150 하급 포션 go whole into an empty slot (AddItem does not cap it at 99);
+		// ten more trim that slot to 99 and the 61 left open the next, so slots read 99/61. DelItem
+		// takes 100 from the last slot back and SortItem closes the gap: 60/0. A sword goes on in
+		// slot 1 but not in slot 3, and the save texts read back the same.
+		Inventory inv = new Inventory(items);
+		int a = inv.add(POTION, 150, 0, false, rng);
+		int b = inv.add(POTION, 10, 0, false, rng);
+		String added = inv.stackCount[Inventory.CONSUMABLES] + "/" + inv.stackCount[Inventory.CONSUMABLES + 1];
+		int notTaken = inv.remove(POTION, 100, -1);
+		String taken = inv.stackCount[Inventory.CONSUMABLES] + "/" + inv.stackCount[Inventory.CONSUMABLES + 1];
+		Item.Equip sword = inv.equip[inv.add(OLD_SAVE_WEAPON, 1, 0, true, rng)];
+		boolean wrongSlot = inv.wear(sword, 3, Hero.MAX_LEVEL);
+		boolean rightSlot = inv.wear(sword, 1, Hero.MAX_LEVEL);
+		Inventory back = new Inventory(items);
+		back.readCaps(inv.capText());
+		back.readEquip(inv.equipText());
+		back.readStacks(inv.stackText());
+		boolean same = back.equipText().equals(inv.equipText()) && back.stackText().equals(inv.stackText());
+		System.out.println("inventory add=" + a + "," + b + " slots=" + added + " left=" + notTaken + " slots=" + taken
+				+ " count=" + inv.count(POTION, -1) + " slot3=" + wrongSlot + " slot1=" + rightSlot + " worn="
+				+ (inv.worn(1) == sword) + " roundtrip=" + same);
+		// FuncUseItem: a 하급 포션 runs global phase 3 (its record +0), whose assignment heals, and
+		// then DelItem takes it.
+		hero.hp = 1;
+		hero.inv.add(POTION, 1, 0, true, rng);
+		drinkPotion();
+		System.out.println("potion hp=1->" + hero.hp + " left=" + potionCount() + " running=" + events.active());
 		new GameCore(assets, storage).writeFrame(sink, "slots-after.png");
 	}
 

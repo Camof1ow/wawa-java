@@ -44,7 +44,9 @@ public final class Hero {
 	public int dex;
 	public int str;
 	public int intel;
-	public Item.Instance weapon;
+	/** The items the record holds from +0xa4 (gold) to +0xe93 (the equipment instances). */
+	public final Inventory inv;
+	/** +0x1cc: the defence AttackMonsHitHeroCore resists with, from worn armour. */
 	public int armor;
 
 	public int hp;
@@ -58,9 +60,10 @@ public final class Hero {
 	/** +0x164, the weapon's value re-rolled by this InitHeroState pass. */
 	public int weaponPower;
 
-	Hero(ElfImage elf, int heroClass) {
+	Hero(ElfImage elf, Item items, int heroClass) {
 		this.elf = elf;
 		this.heroClass = heroClass;
+		this.inv = new Inventory(items);
 		str = elf.s8(DEFAULT_STATS + heroClass);
 		dex = elf.s8(DEFAULT_STATS + heroClass + 3);
 		con = elf.s8(DEFAULT_STATS + heroClass + 6);
@@ -76,15 +79,24 @@ public final class Hero {
 		dodge = pow088(dex) >> 1;
 		crit = BASE_CRIT;
 		int p = pow112(str) >> 5;
-		// +4 is the weapon kind; bare hands leave it at 0, as InitHero does.
-		int kind = weapon == null ? 0 : weapon.kind();
+		// +4 is the worn weapon's form (SetGOrderEquipItem); bare hands leave it at 0, as InitHero does.
+		Item.Equip weapon = inv.worn(1);
+		int kind = weapon == null ? 0 : weapon.weaponForm();
 		statPower = switch (kind) {
 			case 0 -> p * 5 >> 2;
 			case 2 -> p * 3 >> 1;
 			case 3 -> p >> 1;
 			default -> p;
 		};
-		weaponPower = weapon == null ? 0 : weapon.roll(rng);
+		// InitHeroState's equipment pass skips gear worn down to 0: the slot-1 weapon gives +0x164,
+		// slots 3 and 4 (and slot 7, a shield, for class 1) add their value to the defence +0x1cc.
+		weaponPower = weapon == null || weapon.dur == 0 ? 0 : weapon.roll(rng);
+		armor = 0;
+		for (Item.Equip e : inv.worn()) {
+			if (e.dur != 0 && (e.slot == 3 || e.slot == 4 || e.slot == 7 && heroClass == 1)) {
+				armor += e.value;
+			}
+		}
 		hp = Math.min(hp, maxHp);
 	}
 

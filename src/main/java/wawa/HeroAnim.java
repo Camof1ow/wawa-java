@@ -92,16 +92,33 @@ final class HeroAnim {
 	}
 
 	/**
-	 * The port's hero: only the weapon is worn, under the look offset its kind uses
-	 * (+0xd, +0xe or +0xf), with the colour AddItem gave the instance (record +8, grade 0).
+	 * The hero record's look cache as SetGOrderEquipItem fills it from what is worn: the instance's
+	 * look (record +7) and colour (record +8 + grade) under the slot's offsets. Slot 1 by weapon
+	 * type: 1 at +0xd, 2 at +0xe, 3 at +0xf, and its form at +4; slot 3 at +0xa, 4 at +0xb, 10 at
+	 * +0xc, 9 at +8, and slot 7 a class-1 shield at +9 or a class-2 second weapon at +0x10.
 	 */
-	static Look wearing(Item items, Item.Instance weapon, int dir, int act) {
-		int kind = weapon == null ? 0 : weapon.kind();
-		Look l = Look.bare(kind, dir, act);
-		if (weapon != null) {
-			int o = kind == 0 ? 0xd : kind == 2 ? 0xe : 0xf;
-			l.looks()[o - 8] = items.look(weapon.id());
-			l.colours()[o - 8] = items.colour(weapon.id());
+	static Look wearing(Item items, List<Item.Equip> worn, int heroClass, int dir, int act) {
+		Item.Equip weapon = null;
+		for (Item.Equip e : worn) {
+			if (e.slot == 1) {
+				weapon = e;
+			}
+		}
+		Look l = Look.bare(weapon == null ? 0 : weapon.weaponForm(), dir, act);
+		for (Item.Equip e : worn) {
+			int o = switch (e.slot) {
+				case 1 -> e.type == 1 ? 0xd : e.type == 2 ? 0xe : 0xf;
+				case 3 -> 0xa;
+				case 4 -> 0xb;
+				case 10 -> 0xc;
+				case 9 -> 8;
+				case 7 -> heroClass == 1 ? 9 : heroClass == 2 ? 0x10 : -1;
+				default -> -1;
+			};
+			if (o >= 0) {
+				l.looks()[o - 8] = items.look(e.id);
+				l.colours()[o - 8] = items.colour(e.id) + e.grade;
+			}
 		}
 		return l;
 	}

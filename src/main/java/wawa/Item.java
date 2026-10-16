@@ -3,13 +3,17 @@ package wawa;
 import java.util.Random;
 
 /**
- * Item base data the engine keeps in libwawa.so, and the instance AddItem makes from it.
+ * Item base data the engine keeps in libwawa.so, and the equipment instance AddItem makes from it.
  *
  * <pre>
- * g_anItem   0xc89a8   u32 per id: &amp; 0x1f type (1..3 weapons, 4..12 gear, 13+ consumables),
- *                      &gt;&gt; 5 &amp; 7 element
- * g_aItemEx  0xcbffc   record at table + s16[id] + 0x40a:
- *                      +0 u16 base value, +2 u8 spread (%), +3 u8 level
+ * g_anItem        0xc89a8  u32 per id: &amp; 0x1f type (1..0xc equipment, 0xd materials, 0xe/0xf
+ *                          consumables, 0x13 recipes, the rest misc), &gt;&gt; 5 &amp; 7 element (the
+ *                          cooldown group for 0xe), &gt;&gt; 6 &amp; 3 shield grade (type 8),
+ *                          &gt;&gt; 8 &amp; 0xfff name A, &gt;&gt; 20 name B (0xfff: none)
+ * g_aItemEx       0xcbffc  record at table + s16[id] + 0x40a. Equipment: +0 u16 value, +2 spread %,
+ *                          +3 level, +4 u16 durability, +6 its spread %, +7 look, +8 colour (the
+ *                          last two for types below 9). Consumables (0xe, 0xf): +0 u16 global phase
+ * g_astrItemName  0xca228  names, at s16 g_anItemNamePos (0xc9bd8)[name index]
  * </pre>
  */
 public final class Item {
@@ -17,6 +21,9 @@ public final class Item {
 	private static final int KIND = 0xc89a8;
 	private static final int EX = 0xcbffc;
 	private static final int EX_BASE = 0x40a;
+	private static final int NAMES = 0xca228;
+	private static final int NAME_POS = 0xc9bd8;
+	private static final int ITEM_LIST = 0xcbb90;
 	public static final int COUNT = 517;
 
 	private final ElfImage elf;
@@ -27,6 +34,16 @@ public final class Item {
 
 	public int type(int id) {
 		return elf.u32(KIND + id * 4) & 0x1f;
+	}
+
+	/** Types 1..0xc are equipment, kept as instances; the rest stack. */
+	public static boolean equipment(int type) {
+		return type >= 1 && type <= 0xc;
+	}
+
+	/** The shield grade InitHeroState gives a type 8 item in slot 7: (g_anItem &gt;&gt; 6 &amp; 3) + 1. */
+	public int shieldGrade(int id) {
+		return (elf.u32(KIND + id * 4) >> 6 & 3) + 1;
 	}
 
 	public int baseValue(int id) {
@@ -42,6 +59,15 @@ public final class Item {
 		return elf.u8(record(id) + 3);
 	}
 
+	/** Record +4 u16 and +6: durability and its spread, for equipment. */
+	public int durability(int id) {
+		return elf.u16(record(id) + 4);
+	}
+
+	public int durabilitySpread(int id) {
+		return elf.u8(record(id) + 6);
+	}
+
 	/** Record +7: the look AddItem copies to instance +4 and the hero record shows. */
 	public int look(int id) {
 		return elf.u8(record(id) + 7);
@@ -52,17 +78,60 @@ public final class Item {
 		return elf.u8(record(id) + 8);
 	}
 
+	/** A consumable's record +0: the global phase FuncUseItem runs for its effect. */
+	public int script(int id) {
+		return elf.u16(record(id));
+	}
+
+	/** AddItem's stack limit: 99 a slot, runes (type 0x12) one. */
+	public int maxStack(int id) {
+		return type(id) == 0x12 ? 1 : 99;
+	}
+
+	/**
+	 * A type-0 item stands for a group (GetParameterData kind 5): at g_anItemList + (g_anItem &gt;&gt; 20)
+	 * a u8 count, then that many u16 whose low 12 bits are the members' ids.
+	 */
+	public int[] group(int id) {
+		int at = ITEM_LIST + (elf.u32(KIND + id * 4) >>> 20);
+		int[] out = new int[elf.u8(at)];
+		for (int i = 0; i < out.length; i++) {
+			out[i] = elf.u16(at + 1 + 2 * i) & 0xfff;
+		}
+		return out;
+	}
+
+	/** GetItemName: name A, then " B" (":B" for recipes) unless the type is 0 or B is 0xfff. */
+	public String name(int id) {
+		int k = elf.u32(KIND + id * 4);
+		int a = k >> 8 & 0xfff;
+		int b = k >>> 20;
+		int t = k & 0x1f;
+		String n = nameAt(a);
+		return t == 0 || b == 0xfff ? n : n + (t == 0x13 ? ":" : " ") + nameAt(b);
+	}
+
+	private String nameAt(int index) {
+		String s = elf.cstring(NAMES + elf.s16(NAME_POS + index * 2));
+		return s == null ? "" : s;
+	}
+
 	private int record(int id) {
 		return EX + elf.s16(EX + id * 2) + EX_BASE;
 	}
 
 	/**
-	 * AddItem: value = base * grade multiplier * rand(100 - spread .. 100 + spread) / 100, grade
-	 * 1..4 adding a quarter, a half, three quarters or doubling.
+	 * AddItem's equipment instance. A negative grade means ~grade with no sockets. The value is
+	 * base * grade multiplier (1..4 add a quarter, a half, three quarters or double) *
+	 * rand(100 - spread .. 100 + spread) / 100, durability is record +4 * rand(100 +- record +6) / 10
+	 * (100 for types 9 and up), and types below 9 roll 3 sockets on Rand100 &lt; 4, 2 below 0x24, else 1.
+	 * AddEquipOption's options for types 9 and up are not ported.
 	 */
-	public Instance create(int id, int grade, Random rng) {
+	public Equip create(int id, int grade, Random rng) {
+		int t = type(id);
+		int g = grade < 0 ? ~grade : grade;
 		int v = baseValue(id);
-		v = switch (grade) {
+		v = switch (g) {
 			case 1 -> v + (v >> 2);
 			case 2 -> v + (v >> 1);
 			case 3 -> v + (v * 3 >> 2);
@@ -70,23 +139,67 @@ public final class Item {
 			default -> v;
 		};
 		int s = spread(id);
-		return new Instance(id, type(id), v * (100 - s + rng.nextInt(2 * s + 1)) / 100, s);
+		int value = randRange(rng, 100 - s, 100 + s) * v / 100;
+		int ds = durabilitySpread(id);
+		int durMax = randRange(rng, 100 - ds, 100 + ds) * durability(id) / 10;
+		int sockets = 0;
+		if (t < 9) {
+			if (grade >= 0) {
+				int r = rng.nextInt(100);
+				sockets = r < 4 ? 3 : r < 0x24 ? 2 : 1;
+			}
+		} else {
+			durMax = 100;
+		}
+		return new Equip(id, t, value, s, level(id), durMax, sockets, g);
 	}
 
-	/** A held item: id, type, rolled value (+6) and spread (+8). */
-	public record Instance(int id, int type, int value, int spread) {
+	private static int randRange(Random rng, int lo, int hi) {
+		return lo + rng.nextInt(hi - lo + 1);
+	}
 
-		/**
-		 * The hero's weapon kind at +4. AddItem stores {@code type - 1} in the high nibble of +2 for
-		 * weapons; that this is what ends up at +4 is inferred, the equip code setting it was not traced.
-		 */
-		public int kind() {
-			return type >= 1 && type <= 3 ? type - 1 : 0;
+	/** An equipment instance (hero+0x87c, 0x1e bytes each); what this port keeps of it. */
+	public static final class Equip {
+		public final int id;
+		public final int type;
+		/** +6: the rolled attack or defence. */
+		public final int value;
+		/** +8: the spread InitHeroState rolls a weapon's value by. */
+		public final int spread;
+		/** +9: the level GetGOrderEquipLevel requires. */
+		public final int level;
+		/** +0xc and +0xa: maximum and current durability; gear at 0 counts for nothing. */
+		public final int durMax;
+		public int dur;
+		/** +0x1a: sockets (types below 9). */
+		public final int sockets;
+		/** +0x1b: grade 0..4. */
+		public final int grade;
+		/** +0x1c: the slot it is worn in, 1..12, or 0 in the bag. */
+		public int slot;
+		/** +0x1d: 0 found, 1 bought, 2 gambled. */
+		public int origin;
+
+		public Equip(int id, int type, int value, int spread, int level, int durMax, int sockets, int grade) {
+			this.id = id;
+			this.type = type;
+			this.value = value;
+			this.spread = spread;
+			this.level = level;
+			this.durMax = durMax;
+			this.dur = durMax;
+			this.sockets = sockets;
+			this.grade = grade;
+		}
+
+		/** SetGOrderEquipItem's hero[4] for a weapon in slot 1: type 1 gives 0, type 2 gives 2, type 3 gives 1. */
+		public int weaponForm() {
+			return type == 2 ? 2 : type == 3 ? 1 : 0;
 		}
 
 		/** InitHeroState re-rolls a weapon's value by its spread on every pass. */
 		public int roll(Random rng) {
-			return value * (100 - spread + rng.nextInt(2 * spread + 1)) / 100;
+			return value * randRange(rng, 100 - spread, 100 + spread) / 100;
 		}
 	}
 }
