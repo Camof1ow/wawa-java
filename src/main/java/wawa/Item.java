@@ -38,6 +38,11 @@ public final class Item {
 		return elf.u8(record(id) + 2);
 	}
 
+	/** Record +3: the level GetGOrderEquipLevel compares with the hero's before equipping. */
+	public int level(int id) {
+		return elf.u8(record(id) + 3);
+	}
+
 	/** Record +7: the look AddItem copies to instance +4 and the hero record shows. */
 	public int look(int id) {
 		return elf.u8(record(id) + 7);

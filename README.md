@@ -26,17 +26,24 @@ Screenshots and measurements in these notes come from running the original in an
   `lnk_hero`, palette rows from `pal/<n>.png`) on the slot screen, the new-game preview (each
   class's outfit) and the field.
 - **World map, grid movement, turn-based combat, save/load**: playable Swing slice.
+- **Event scripts**: `eve/*.evk` phases run as the original interprets them (`EventRunner`): a new
+  game plays t01's opening with its captions, dialogue (portraits, names, typing; Enter advances,
+  F toggles fast mode), NPC units, hero moves, camera, fades and emote bubbles. NPC events start
+  with Enter next to the NPC. Script variables are saved with the slot.
 
 ## What is not finished
 
 - **Inventory and equipment.** Monsters get InitMonsAbility's stats at their real level and the hero
   follows InitHero / InitHeroState / InitHeroLevelUp (`Hero`, `Combat`). The hero holds item 297, the
-  first weapon the t02 event script equips on a new game; there is no inventory, armour, equip
-  screen or event-script interpreter yet.
+  first weapon the t02 event script equips on a new game, because map exits are not ported and t02
+  cannot be reached yet; there is no inventory, armour or equip screen.
+- **Event script gaps.** Quests, buffs, sound, zoom, choices, the GOrder/GMenu screens, map exit,
+  area and object triggers, and hero actions (`b3`) are not ported; a script that reaches one logs
+  `[미포팅]` and carries on as `docs/FORMATS.md` §10 lists.
 - **Animation playback.** Poses for any state and step are composed (`MonsterAnim.pose`,
   `HeroAnim.pose`); monsters only draw state 0, step 0, and the hero only its stand, walk and sit
   actions (attacks, skills and riding are not ported).
-- **Palette variants** (`LoadSpritePal`), `.mbk` object/portal tables, quest and event scripts.
+- **Palette variants** (`LoadSpritePal`), `.mbk` object/portal tables.
 
 ## Requirements
 
@@ -73,6 +80,7 @@ a few fights, writing `out/slots.png`, `out/newgame.png`, `out/selftest.png` and
 | `src/main/java/wawa/{MapData,TileAtlas,Tiles}.java` | ground pipeline |
 | `src/main/java/wawa/{MonsterTable,MonsterData,MonsterStats,MonsterSprite,MonsterAnim}.java` | monsters |
 | `src/main/java/wawa/{PartSprites,HeroAnim}.java` | dat part composition shared by monsters and the hero; hero outfit layers |
+| `src/main/java/wawa/{EventScript,EventRunner,TalkBox}.java` | event tables and length rules, the phase interpreter, the dialogue box |
 | `src/main/java/wawa/{Hero,Item,Combat}.java` | hero record, item tables, hit resolution |
 | `src/main/java/wawa/{Gsac,RenderAtlas,ElfImage,ResourceFile}.java` | asset decoding |
 | `src/main/java/wawa/{CheckMaps,CheckMapsRun,ExtractAll,MatchSprite,FindBySize}.java` | tools |

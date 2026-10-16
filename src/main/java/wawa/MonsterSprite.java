@@ -14,6 +14,7 @@ public final class MonsterSprite {
 	private final MonsterData kinds;
 	private final MonsterAnim anim;
 	private final Map<Integer, PartSprites.Pose> byKind = new HashMap<>();
+	private final Map<Long, PartSprites.Pose> poses = new HashMap<>();
 
 	private MonsterSprite(Path assets, MonsterData kinds) {
 		this.kinds = kinds;
@@ -46,6 +47,33 @@ public final class MonsterSprite {
 			byKind.put(kind, pose);
 		}
 		return byKind.get(kind);
+	}
+
+	/**
+	 * One step of ani_* entry {@code ani} of the monster's kind, mirrored as ChangeMonsDir's +0x28
+	 * says; null when nothing in it decodes.
+	 */
+	PartSprites.Pose pose(int monsterId, int ani, int step, boolean mirror) {
+		int kind = kinds.kind(monsterId);
+		int[] entry = kinds.animEntry(kind, ani);
+		int s = entry == null ? 0 : Math.floorMod(step, Math.max(1, entry[2]));
+		long key = (long) kind << 32 | (long) ani << 16 | (long) s << 1 | (mirror ? 1 : 0);
+		return poses.computeIfAbsent(key, k -> {
+			try {
+				return anim.pose(monsterId, ani, s, mirror);
+			} catch (IOException e) {
+				return null;
+			}
+		});
+	}
+
+	int kind(int monsterId) {
+		return kinds.kind(monsterId);
+	}
+
+	/** {u16, baseFrame, steps} of ani entry {@code ani} of the monster's kind, or null. */
+	int[] animEntry(int monsterId, int ani) {
+		return kinds.animEntry(kinds.kind(monsterId), ani);
 	}
 
 	public int palette(int monsterId) {

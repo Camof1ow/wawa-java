@@ -1,0 +1,1048 @@
+package wawa;
+
+import java.awt.Graphics2D;
+import java.awt.Color;
+import java.awt.event.KeyEvent;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * The phase interpreter: ExecPhase, AnalysisPhaseAuto, AnalysisPhaseOne (WIPI FUN_000291e8),
+ * CalcPhase, ExitPhase, KeyPressPhase, CalcPhaseCondition / NextPhaseCondition, CheckCondition,
+ * CalcPhaseAssignment and the SearchPhase triggers.
+ *
+ * <pre>
+ * stack     up to 8 entries {table, event, line offsets, pc, timer, result}
+ * results   0 running, 1/2 ended, 3 abort the stack, 4 dialogue, 5 wait for timer and movement,
+ *           6 caption, 7 notice, 8 choice; 4..8 block the entry and its parents
+ * frame     AnalysisPhaseOne runs the line at pc, then keeps going while the next line has the f0
+ *           prefix or the line just run set "continue" (lines 1 failing, 6, 7, b, d, e)
+ * triggers  type 1 always and 0xb on its condition (local table, then 0xb in the global one),
+ *           2 map exit, 4 NPC, 5 death, 6 area, 7 map object; first match with status 0 runs
+ * status    written when the outermost phase ends: types 1/0xb get result + 1, types &gt; 3 get 3
+ *           when the result is 2; map exits never; local status resets whenever the map reloads
+ * </pre>
+ *
+ * Quests, buffs, sound, zoom and the GOrder/GMenu screens these commands open are not ported; the
+ * commands that need them say so through {@link World#notPorted}.
+ */
+final class EventRunner {
+
+	static final int QUEST = 1;
+	static final int GLOBAL = 2;
+	static final int LOCAL = 3;
+	static final int HERO = -1;
+
+	/** What the interpreter moves and asks about; Game implements it. */
+	interface World {
+		/** FUN_0004911e / SetPhaseHeroStop: the hero and monsters come under script control. */
+		void heroStop();
+
+		/** 73: place the hero (x = y = 0xff keeps the cell; dir 8 keeps the direction). */
+		void heroPlace(int x, int y, int dir);
+
+		/** 83: walk the hero to a cell. */
+		void heroWalk(int x, int y, int dir);
+
+		/** 93 / a3: fade the hero out (placing it) or back in. */
+		void heroVisible(boolean visible, int x, int y, int dir);
+
+		/** b3: hero direction and action. */
+		void heroAct(int dir, int act);
+
+		/** e3: walk the hero next to a unit, on side d. */
+		void heroToUnit(int unit, int side);
+
+		/** 03: LoadMonsToTemp; returns the frames to wait. */
+		int unitSpawn(int a, int b, int c, int d);
+
+		/** 13..63: unit commands by hi nibble; returns frames to wait, or -1 when the unit is gone. */
+		int unit(int hi, int id, int x, int y, int dir);
+
+		/** c3 / d3: hide or show map object obj. */
+		void mapObject(int obj, boolean visible);
+
+		/** True while a scripted walk is still going (hero or units). */
+		boolean moving();
+
+		/** The skip mode's shortcut: every scripted walk arrives at once. */
+		void arriveAll();
+
+		/** 14: LoadGameMap. */
+		void moveMap(String code);
+
+		/** LoadGameMap(name, 2) after a phase that moved the map: the new map's events load. */
+		void reloadEvents();
+
+		/** 45: fade/colour step k; returns the frames the phase waits for it. */
+		int fade(int k, int mode);
+
+		/** 65: AddSwing. */
+		void shake(int n);
+
+		/** 35 and talk records: AddImoticon on a unit, or the hero for {@link #HERO}. */
+		void emote(int unit, int kind);
+
+		/** 08..68 and 75..a5: camera. hi as in the opcode, target -1 for the hero. */
+		void camera(int hi, int x, int y, int target);
+
+		/** 17: AddItem; false when it cannot be taken. */
+		boolean giveItem(int id, int count, int flags);
+
+		/** 07: DelItem. */
+		void takeItem(int id, int count);
+
+		/** 4b: SaveSlot. */
+		void save();
+
+		/** GetParameterData kind 4 / assignment target 4: hero+0xa4 + 4i. */
+		int heroInt(int i);
+
+		void setHeroInt(int i, int v);
+
+		/** GetParameterData kind 5: how many of item id the hero holds. */
+		int itemCount(int id);
+
+		/** System variables 0x14.. (clock, difficulty, class, visited maps, time). */
+		int systemValue(int i);
+
+		String heroName();
+
+		/** wawamain+0x4d04: the name SearchPhaseNPC copied. */
+		String npcName();
+
+		/** A command whose subsystem this port does not have. */
+		void notPorted(String what);
+	}
+
+	private static final class Entry {
+		EventScript.Table t;
+		int type;
+		int idx;
+		int[] lines;
+		/** The phase header: LoadMonsToTemp's monster id list. */
+		int headerAt;
+		int headerLen;
+		int pc;
+		int timer;
+		int result;
+	}
+
+	private final World w;
+	final EventScript.Vars vars = new EventScript.Vars();
+	final TalkBox talk;
+	EventScript.Table local = EventScript.EMPTY;
+	EventScript.Table global = EventScript.EMPTY;
+	private final List<Entry> stack = new ArrayList<>();
+	/** wawamain+0x5f34: 0 normal, 1 fast ('#'), 2 skip (AnalysisPhaseSave 5). */
+	int mode;
+	/** wawamain+0x5f38: the frame counter shared by every entry. */
+	private int shared;
+	/** wawamain+0x5f54: AnalysisPhaseSave 2 forbids '#' and hides its button. */
+	private boolean noSkip;
+	private final byte[] instance = new byte[9];
+	private int instanceCounter;
+	private final TalkBox.Emotes emotes;
+
+	EventRunner(World w, TalkBox talk) {
+		this.w = w;
+		this.talk = talk;
+		this.emotes = new TalkBox.Emotes() {
+			@Override
+			public void emote(int unit, int kind) {
+				w.emote(unit, kind);
+			}
+
+			@Override
+			public int instance() {
+				return EventRunner.this.instanceByte();
+			}
+		};
+	}
+
+	boolean active() {
+		return !stack.isEmpty();
+	}
+
+	/** LoadGameMap with a non-zero mode: the map's events reload and their status returns to 0. */
+	void loadMap(EventScript.Table t) {
+		local = t;
+		stack.clear();
+		talk.clear();
+		// FuncMoveMap clears system variables 0..9 on every map change.
+		for (int i = 0; i < 10; i++) {
+			vars.sys[i] = 0;
+		}
+	}
+
+	/** The running phase's header bytes: the monster ids opcode 03 spawns by index. */
+	int[] phaseHeader() {
+		if (!active()) {
+			return new int[0];
+		}
+		Entry e = stack.get(stack.size() - 1);
+		int[] out = new int[e.headerLen];
+		for (int i = 0; i < out.length; i++) {
+			out[i] = e.t.d[e.headerAt + i] & 0xff;
+		}
+		return out;
+	}
+
+	private int instanceByte() {
+		return instance[Math.max(0, stack.size() - 1)] & 0xff;
+	}
+
+	private EventScript.Table table(int type) {
+		return type == GLOBAL ? global : local;
+	}
+
+	// ---- triggers --------------------------------------------------------------------------
+
+	/** SearchPhase: true when a phase started and is still running. */
+	boolean searchPhase() {
+		if (active()) {
+			return true;
+		}
+		mode = 0;
+		for (int i = 0; i < local.count(); i++) {
+			int t = local.type(i);
+			if (local.status[i] == 0 && (t == 1 || t == 0xb && condition(local.d, local.param(i)) != 0)) {
+				return started(execPhase(LOCAL, i, true));
+			}
+		}
+		for (int i = 0; i < global.count(); i++) {
+			if (global.status[i] == 0 && global.type(i) == 0xb && condition(global.d, global.param(i)) != 0) {
+				return started(execPhase(GLOBAL, i, true));
+			}
+		}
+		return false;
+	}
+
+	private static boolean started(int r) {
+		return r == 0 || r == -1 || r >= 4;
+	}
+
+	/** SearchPhaseMapMove: true when an exit event took over (the event moves the hero itself). */
+	boolean searchMapMove(int exit) {
+		mode = 0;
+		for (int i = 0; i < local.count(); i++) {
+			if (local.type(i) == 2 && local.status[i] == 0 && (local.d[local.param(i)] & 0xff) == exit) {
+				int r = execPhase(LOCAL, i, true);
+				return r == 0 || r == 1;
+			}
+		}
+		return false;
+	}
+
+	/** SearchPhaseNPC / Dead / Area / Subj: run the first matching event of the type. */
+	boolean searchUnit(int type, int id) {
+		if (type == 7 && active()) {
+			return false;
+		}
+		mode = 0;
+		for (int i = 0; i < local.count(); i++) {
+			if (local.type(i) == type && local.status[i] == 0 && (local.d[local.param(i)] & 0xff) == id) {
+				return execPhase(LOCAL, i, true) == 0;
+			}
+		}
+		return false;
+	}
+
+	boolean searchArea(int tx, int ty) {
+		mode = 0;
+		for (int i = 0; i < local.count(); i++) {
+			int p = local.param(i);
+			if (local.type(i) == 6 && local.status[i] == 0 && (local.d[p] & 0xff) <= tx && tx <= (local.d[p + 2] & 0xff)
+					&& (local.d[p + 1] & 0xff) <= ty && ty <= (local.d[p + 3] & 0xff)) {
+				return execPhase(LOCAL, i, true) == 0;
+			}
+		}
+		return false;
+	}
+
+	// ---- ExecPhase / ExitPhase -------------------------------------------------------------
+
+	/** ExecPhase(type, idx, run). */
+	int execPhase(int type, int idx, boolean run) {
+		if (type == QUEST) {
+			w.notPorted("퀘스트 phase");
+			return 3;
+		}
+		EventScript.Table t = table(type);
+		int depth = stack.size();
+		instance[depth] = (byte) (instanceCounter + 1);
+		instanceCounter = (instanceCounter + 1) & 0xf0;
+		int p = t.phase(idx);
+		int n = t.d[p] & 0xff;
+		if (n == 0) {
+			return -1;
+		}
+		Entry e = new Entry();
+		e.t = t;
+		e.type = type;
+		e.idx = idx;
+		e.lines = new int[n];
+		e.headerAt = p + 2;
+		e.headerLen = t.d[p + 1] & 0xff;
+		int q = p + (t.d[p + 1] & 0xff) + 2;
+		for (int k = 0; k < n; k++) {
+			e.lines[k] = q;
+			q += EventScript.phaseOneLen(t.d, q);
+		}
+		stack.add(e);
+		shared = 0;
+		if (!run) {
+			return 0;
+		}
+		int r = mode == 2 ? analysisOne(e) : analysisAuto(e);
+		e.result = r;
+		if (r == 1 || r == 2) {
+			exitPhase(e, r);
+			return r;
+		}
+		if (r == 3) {
+			abortAll();
+			return 3;
+		}
+		return e.result;
+	}
+
+	/**
+	 * ExecPhase's result-3 loop: closes the entries running now. The last close may start a new
+	 * phase through SearchPhase; that one is left running (the original's loop runs one past).
+	 */
+	private void abortAll() {
+		for (int n = stack.size(); n > 0 && !stack.isEmpty(); n--) {
+			exitPhase(stack.get(stack.size() - 1), 3);
+		}
+	}
+
+	/** ExitPhase(e, r). */
+	private void exitPhase(Entry e, int r) {
+		stack.remove(e);
+		int t = e.t.type(e.idx);
+		if (e.type == LOCAL && t == 2 && r == 1 && stack.isEmpty()) {
+			initPhaseZero();
+			// ExitPhase always reads the exit at +1, even for shared headers.
+			w.notPorted("맵 출구 이동(" + (e.t.d[e.t.offs[e.idx] + 1] & 0xff) + ")");
+			return;
+		}
+		if (!stack.isEmpty()) {
+			return;
+		}
+		if (r != 3) {
+			if (e.type == LOCAL) {
+				if (t == 1 || t == 0xb) {
+					e.t.status[e.idx] = (byte) (r + 1);
+				} else if (t > 3 && r == 2) {
+					e.t.status[e.idx] = 3;
+				}
+			} else if (e.type == GLOBAL && t == 0xb) {
+				e.t.status[e.idx] = (byte) (r + 1);
+			}
+		}
+		initPhaseZero();
+		if (reloadAfter) {
+			// Opcode 14 loaded the map with mode 0; ExitPhase reloads it with mode 2 now.
+			reloadAfter = false;
+			w.reloadEvents();
+		}
+		searchPhase();
+	}
+
+	/** wawamain+0x5f49: the map moved under a running phase. */
+	private boolean reloadAfter;
+
+	/** InitPhaseZero: control returns to the player. */
+	private void initPhaseZero() {
+		noSkip = false;
+		mode = 0;
+		talk.clear();
+		w.camera(0, 0, 0, HERO);
+	}
+
+	// ---- AnalysisPhaseAuto / AnalysisPhaseOne ----------------------------------------------
+
+	/** The line at index k, through 0f references; {offset of op byte, prefix length}. */
+	private int[] line(Entry e, int k) {
+		byte[] d = e.t.d;
+		int at = e.lines[k];
+		int i = (d[at] & 0xff) == 0xf0 ? 2 : 1;
+		int op = d[at + i - 1] & 0xff;
+		if ((op & 0xf) == 0xf) {
+			at = e.lines[d[at + i] & 0xff];
+			i = (d[at] & 0xff) == 0xf0 ? 2 : 1;
+		}
+		return new int[] { at, i };
+	}
+
+	/** AnalysisPhaseAuto: run the invisible lines (6, 7, b, d, e) at once, stop at anything else. */
+	private int analysisAuto(Entry e) {
+		e.timer = 0;
+		byte[] d = e.t.d;
+		int budget = 4096;
+		while (e.pc < e.lines.length) {
+			if (--budget < 0) {
+				// Same bound as analysisOne; the rest runs from the next frame.
+				w.notPorted("한 프레임 안의 끝없는 반복(이벤트 " + e.idx + ", 줄 " + e.pc + ")");
+				return 0;
+			}
+			int[] l = line(e, e.pc);
+			int op = d[l[0] + l[1] - 1] & 0xff;
+			int a = l[0] + l[1];
+			int hi = op >> 4;
+			switch (op & 0xf) {
+				case 6 -> {
+					w.notPorted("버프");
+					e.pc++;
+				}
+				case 7 -> {
+					if (!item(hi, d, a)) {
+						return 3;
+					}
+					e.pc++;
+				}
+				case 0xb -> {
+					if (hi == 8) {
+						return 3;
+					}
+					save(hi);
+					e.pc++;
+					if (mode == 2) {
+						return analysisOne(e);
+					}
+				}
+				case 0xd -> {
+					if (hi == 3) {
+						return 0;
+					}
+					int pc = calcCondition(e, hi, a);
+					if (pc < 0) {
+						return -pc;
+					}
+					e.pc = pc;
+				}
+				case 0xe -> {
+					assign(d, a);
+					e.pc++;
+				}
+				default -> {
+					return 0;
+				}
+			}
+		}
+		return 1;
+	}
+
+	/** AnalysisPhaseOne: one frame of lines, as FUN_000291e8 runs them. */
+	private int analysisOne(Entry e) {
+		e.timer = 0;
+		byte[] d = e.t.d;
+		int result = 0;
+		boolean cont = true;
+		// The original has no bound here; a WHILE whose body this port leaves inert would spin the
+		// frame forever, so the frame ends after this many lines and the loop resumes next frame.
+		int budget = 4096;
+		while (e.pc < e.lines.length) {
+			int at = e.lines[e.pc];
+			if ((d[at] & 0xff) != 0xf0 && !cont) {
+				break;
+			}
+			if (--budget < 0) {
+				w.notPorted("한 프레임 안의 끝없는 반복(이벤트 " + e.idx + ", 줄 " + e.pc + ")");
+				break;
+			}
+			cont = false;
+			int[] l = line(e, e.pc);
+			int op = d[l[0] + l[1] - 1] & 0xff;
+			int a = l[0] + l[1];
+			int hi = op >> 4;
+			int wait = 0;
+			boolean advance = true;
+			switch (op & 0xf) {
+				case 0 -> {
+					w.heroStop();
+					talk.startTalk(d, a, mode, w.heroName(), w.npcName(), emotes);
+					e.pc++;
+					return 4;
+				}
+				case 1 -> {
+					int id = u16(d, a);
+					if (hi <= 1) {
+						int r = execPhase(hi + 2, id, true);
+						if (r == 0 || r == 8) {
+							e.pc++;
+							return result;
+						}
+						if (r == 3) {
+							return 3;
+						}
+						cont = true;
+					} else if (hi == 2) {
+						w.heroStop();
+						w.notPorted("GMenu 100(" + id + ")");
+					} else if (hi == 3) {
+						// The finish only acts on a quest in the hero's seven slots; the port has no
+						// quests, so the slot search finds none and the line passes like the original's.
+						w.notPorted("퀘스트 완료(" + id + ")");
+					}
+				}
+				case 2 -> {
+					w.heroStop();
+					w.notPorted("GOrder/GMenu 화면(" + Integer.toHexString(op) + ")");
+					e.pc++;
+					return 0;
+				}
+				case 3 -> {
+					int r = unitCommand(hi, d, a);
+					if (mode != 2 && r >= 0) {
+						result = 5;
+						wait = r;
+					}
+				}
+				case 4 -> {
+					if (hi != 0) {
+						w.heroStop();
+						e.pc++;
+						reloadAfter = true;
+						w.moveMap("" + (char) (d[a] & 0xff) + String.format("%02d", d[a + 1] & 0xff));
+						return 0;
+					}
+					w.notPorted("저장해 둔 맵으로 복귀");
+				}
+				case 5 -> {
+					wait = screen(hi, d, a);
+					result = 5;
+				}
+				case 6 -> {
+					w.notPorted("버프");
+					cont = true;
+				}
+				case 7 -> {
+					if (!item(hi, d, a)) {
+						return 3;
+					}
+					cont = true;
+				}
+				case 8 -> {
+					w.heroStop();
+					cameraCommand(hi, d, a);
+					if (hi != 3 && hi != 4) {
+						result = 5;
+					}
+				}
+				case 9 -> w.notPorted("사운드");
+				case 0xa -> {
+					w.heroStop();
+					int len = d[a] & 0xff;
+					if (hi == 0) {
+						talk.startNotice(d, a + 1, len);
+						e.pc++;
+						return 7;
+					}
+					if (hi != 1) {
+						talk.startCaption(d[a] & 0xff, d, a + 2, d[a + 1] & 0xff, mode);
+						e.pc++;
+						return 6;
+					}
+					w.notPorted("헤드라인");
+				}
+				case 0xb -> {
+					if (hi == 8) {
+						w.notPorted("엔딩");
+						return 3;
+					}
+					save(hi);
+					cont = true;
+				}
+				case 0xc -> {
+					w.heroStop();
+					if (mode == 0) {
+						// The wait goes to the shared counter (wawamain+0x5f38), not the entry.
+						shared = (d[a] & 0xff) + 1;
+						result = 5;
+					}
+				}
+				case 0xd -> {
+					cont = true;
+					int pc = calcCondition(e, hi, a);
+					if (pc < 0) {
+						return -pc;
+					}
+					advance = false;
+					e.pc = pc;
+					if (hi == 3) {
+						w.notPorted("선택지");
+						return 3;
+					}
+				}
+				case 0xe -> {
+					assign(d, a);
+					cont = true;
+				}
+				default -> advance = false;
+			}
+			if (advance) {
+				e.pc++;
+			}
+			if (mode == 2) {
+				cont = true;
+			}
+			e.timer = Math.max(e.timer, wait);
+		}
+		if (e.pc >= e.lines.length && result == 0) {
+			result = 1;
+		}
+		return result;
+	}
+
+	private static int u16(byte[] d, int p) {
+		return (d[p] & 0xff) | (d[p + 1] & 0xff) << 8;
+	}
+
+	/** A unit id operand: id, or ff id with the phase instance byte as the high byte. */
+	private int[] unitId(byte[] d, int p) {
+		int b = d[p] & 0xff;
+		if (b == 0xff) {
+			return new int[] { instanceByte() * 256 + (d[p + 1] & 0xff), 2 };
+		}
+		return new int[] { b, 1 };
+	}
+
+	/** AnalysisPhaseUnit (hi 0..6, c, d) and AnalysisPhaseHero (hi 7..b, e). */
+	private int unitCommand(int hi, byte[] d, int a) {
+		switch (hi) {
+			case 0:
+				return w.unitSpawn(d[a] & 0xff, d[a + 1] & 0xff, d[a + 2] & 0xff, d[a + 3] & 0xff);
+			case 7:
+				w.heroStop();
+				w.heroPlace(d[a] & 0xff, d[a + 1] & 0xff, d[a + 2] & 0xff);
+				return 0;
+			case 8:
+				w.heroStop();
+				w.heroWalk(d[a] & 0xff, d[a + 1] & 0xff, d[a + 2] & 0xff);
+				return 0;
+			case 9:
+				w.heroStop();
+				w.heroVisible(false, d[a] & 0xff, d[a + 1] & 0xff, d[a + 2] & 0xff);
+				return 4;
+			case 0xa:
+				w.heroVisible(true, 0xff, 0xff, 8);
+				return 4;
+			case 0xb:
+				w.heroStop();
+				w.heroAct(d[a] & 0xff, d[a + 1] & 0xff);
+				return 0;
+			case 0xc, 0xd:
+				w.mapObject(d[a] & 0xff, hi == 0xd);
+				return 0;
+			case 0xe: {
+				int[] id = unitId(d, a);
+				w.heroStop();
+				w.heroToUnit(id[0], d[a + id[1]] & 0xff);
+				return 0;
+			}
+			default: {
+				int[] id = unitId(d, a);
+				int p = a + id[1];
+				int x = hi == 2 || hi == 3 || hi == 6 ? d[p] & 0xff : 0;
+				int y = hi == 2 || hi == 3 || hi == 6 ? d[p + 1] & 0xff : 0;
+				int dir = hi == 2 || hi == 3 ? d[p + 2] & 0xff : 0;
+				return w.unit(hi, id[0], x, y, dir);
+			}
+		}
+	}
+
+	/** Opcode lo 5: zoom, emote, fade, damage text, shake, camping; returns frames to wait. */
+	private int screen(int hi, byte[] d, int a) {
+		switch (hi) {
+			case 0, 1, 2:
+				w.notPorted("화면 줌");
+				return 0;
+			case 3: {
+				w.heroStop();
+				if ((d[a] & 0xff) == 0xfe) {
+					w.emote(HERO, d[a + 1] & 0xff);
+				} else {
+					int[] id = unitId(d, a);
+					w.emote(id[0], d[a + id[1]] & 0xff);
+				}
+				return 0x10;
+			}
+			case 4:
+				w.heroStop();
+				return w.fade(d[a] & 0xff, mode);
+			case 5:
+				w.notPorted("숫자 띄우기");
+				return 0;
+			case 6:
+				w.heroStop();
+				w.shake(d[a] & 0xff);
+				return 4;
+			case 7, 8, 9:
+				w.heroStop();
+				w.camera(hi, d[a] & 0xff, d[a + 1] & 0xff, 0);
+				return 0;
+			case 0xa:
+				w.camera(hi, 0, 0, 0);
+				return 0;
+			default:
+				return 0;
+		}
+	}
+
+	/** Opcode lo 8: camera follow, move, look at. */
+	private void cameraCommand(int hi, byte[] d, int a) {
+		if (hi == 1 || hi == 2) {
+			w.camera(0x10 + hi, d[a] & 0xff, d[a + 1] & 0xff, 0);
+		} else if (hi >= 3 && hi <= 6) {
+			int target = (d[a] & 0xff) == 0xfe ? HERO : unitId(d, a)[0];
+			w.camera(0x10 + hi, 0, 0, target);
+		} else if (hi == 0) {
+			w.camera(0x10, 0, 0, 0);
+		}
+	}
+
+	/** AnalysisPhaseItem: 07 take, 17 give (3 when the hero cannot take it). */
+	private boolean item(int hi, byte[] d, int a) {
+		int id = u16(d, a);
+		int count = (d[a + 2] & 0xff) + 1;
+		if (hi == 0) {
+			w.takeItem(id, count);
+			return true;
+		}
+		return w.giveItem(id, count, d[a + 3] & 0xff);
+	}
+
+	/** AnalysisPhaseSave(hi). */
+	private void save(int hi) {
+		switch (hi) {
+			case 2 -> noSkip = true;
+			case 3 -> noSkip = false;
+			case 4 -> w.save();
+			case 5 -> mode = 2;
+			default -> {
+			}
+		}
+	}
+
+	// ---- CalcPhase / KeyPressPhase / DrawPhase ---------------------------------------------
+
+	/** CalcPhase: once per frame. */
+	void calcPhase() {
+		int k = stack.size();
+		while (true) {
+			int i = k - 1;
+			if (i < 0) {
+				return;
+			}
+			Entry e = stack.get(i);
+			switch (e.result) {
+				case 4 -> {
+					if (talk.talking()) {
+						talk.calcTalk(mode, w.heroName(), w.npcName(), emotes);
+						return;
+					}
+					talk.clear();
+				}
+				case 6 -> {
+					if (talk.talking() && !talk.calcCaption()) {
+						return;
+					}
+					talk.clear();
+				}
+				case 5 -> {
+					if (mode == 2) {
+						w.arriveAll();
+					}
+					shared--;
+					e.timer--;
+					if (!(e.timer < 0 && shared < 0 && !w.moving())) {
+						return;
+					}
+				}
+				case 3 -> {
+					abortAll();
+					return;
+				}
+				case 7, 8 -> {
+					return;
+				}
+				default -> {
+				}
+			}
+			int r = analysisOne(e);
+			if (!stack.contains(e)) {
+				return;
+			}
+			e.result = r;
+			if (r == 1 || r == 2) {
+				exitPhase(e, r);
+				k = i;
+			} else if (r == 3) {
+				abortAll();
+				return;
+			} else {
+				if (i >= stack.size() - 1) {
+					return;
+				}
+				k = k + 1;
+			}
+		}
+	}
+
+	/** The DrawPhase half that moves the text box state. */
+	void frame() {
+		if (active()) {
+			talk.frame(mode, w.heroName(), w.npcName(), emotes);
+		}
+	}
+
+	/** KeyPressPhase: true (key consumed) whenever a phase runs. */
+	boolean key(int code) {
+		if (!active()) {
+			return false;
+		}
+		Entry e = stack.get(stack.size() - 1);
+		if (code == KeyEvent.VK_NUMBER_SIGN || code == KeyEvent.VK_F) {
+			if (!noSkip) {
+				if (e.result == 6 && mode == 0) {
+					talk.skipCaption();
+				}
+				mode = mode == 0 ? 1 : mode == 1 ? 0 : mode;
+			}
+			return true;
+		}
+		if (e.result == 4 || e.result == 6) {
+			talk.key(code, mode, w.heroName(), w.npcName(), emotes);
+		} else if (e.result == 7 && talk.key(code, mode, w.heroName(), w.npcName(), emotes)) {
+			talk.clear();
+			e.result = 0;
+		}
+		return true;
+	}
+
+	/** DrawPhase on the 480x320 overlay: letterbox bars, then the text box. */
+	void draw(Graphics2D g) {
+		if (!active()) {
+			return;
+		}
+		g.setColor(Color.BLACK);
+		g.fillRect(0, 0, TalkBox.W, 24);
+		g.fillRect(0, TalkBox.H - 24, TalkBox.W, 24);
+		int r = stack.get(stack.size() - 1).result;
+		talk.draw(g, mode, noSkip || r == 7 || r == 8);
+	}
+
+	// ---- conditions, parameters, assignment -------------------------------------------------
+
+	/** CalcPhaseCondition: the next pc, or -1 / -2 to end the phase with result 1 / 2. */
+	private int calcCondition(Entry e, int hi, int a) {
+		byte[] d = e.t.d;
+		int pc = e.pc;
+		return switch (hi) {
+			case 0 -> condition(d, a) != 0 ? pc + 1 : nextCondition(e, pc, 0);
+			case 1, 2 -> nextCondition(e, pc, 1);
+			case 3 -> pc + 1;
+			case 4 -> condition(d, a) != 0 ? pc + 1 : nextCondition(e, pc, 6);
+			case 5 -> nextCondition(e, pc, 6);
+			case 6, 0xb -> nextCondition(e, pc, 5);
+			case 7 -> d[a] & 0xff;
+			case 8 -> -1;
+			case 9 -> -2;
+			default -> pc + 1;
+		};
+	}
+
+	/** NextPhaseCondition: walk to the matching ELSE / ENDIF / loop line. */
+	private int nextCondition(Entry e, int pc, int m) {
+		byte[] d = e.t.d;
+		int a = 0;
+		int b = 0;
+		int c = 0;
+		while (true) {
+			pc += m == 5 ? -1 : 1;
+			if (pc < 0 || pc >= e.lines.length) {
+				return e.lines.length;
+			}
+			int[] l = line(e, pc);
+			int op = d[l[0] + l[1] - 1] & 0xff;
+			if ((op & 0xf) != 0xd) {
+				continue;
+			}
+			int args = l[0] + l[1];
+			switch (op >> 4) {
+				case 0 -> a++;
+				case 1 -> {
+					if (a == 0 && m == 0) {
+						return pc + 1;
+					}
+				}
+				case 2 -> {
+					if (a == 0 && m == 0 && condition(d, args) != 0) {
+						return pc + 1;
+					}
+				}
+				case 3 -> c++;
+				case 4 -> {
+					if (m == 5) {
+						if (b == 0) {
+							return pc;
+						}
+						b--;
+					} else {
+						b++;
+					}
+				}
+				case 0xa -> {
+					if (a == 0) {
+						if (m == 0 || m == 1) {
+							return pc + 1;
+						}
+					} else {
+						a--;
+					}
+				}
+				case 0xb -> {
+					if (m == 5) {
+						b++;
+					} else if (b != 0) {
+						b--;
+					} else if (m == 6) {
+						return pc + 1;
+					}
+				}
+				case 0xc -> {
+					if (c != 0) {
+						c--;
+					} else if (m >= 2 && m <= 4 || m == 6) {
+						return pc + 1;
+					}
+				}
+				default -> {
+				}
+			}
+		}
+	}
+
+	/** CheckCondition. */
+	int condition(byte[] d, int p) {
+		int x = param(d, p);
+		int len = EventScript.parameterLen(d, p);
+		int op = d[p + len] & 0xff;
+		int y = op < 0x12 ? param(d, p + len + 1) : 0;
+		return switch (op) {
+			case 0 -> x + y;
+			case 1 -> x - y;
+			case 2 -> x * y;
+			case 3 -> y == 0 ? 0 : x / y;
+			case 4 -> y == 0 ? 0 : x % y;
+			case 5 -> x > y ? 1 : 0;
+			case 6 -> x >= y ? 1 : 0;
+			case 7 -> x < y ? 1 : 0;
+			case 8 -> x <= y ? 1 : 0;
+			case 9 -> x == y ? 1 : 0;
+			case 10 -> x != y ? 1 : 0;
+			case 0xb -> x & y;
+			case 0xc -> x | y;
+			case 0xd -> x ^ y;
+			case 0xe -> x << (y & 0xff);
+			case 0xf -> x >> (y & 0xff);
+			case 0x10 -> x & 1 << (y & 0xff);
+			case 0x11 -> (x & 1 << (y & 0xff)) == 0 ? 1 : 0;
+			case 0x12 -> x;
+			case 0x13 -> x == 0 ? 1 : 0;
+			// 0x14..0x17 test quest slots and quest status; the port has no quests.
+			default -> 0;
+		};
+	}
+
+	/** GetParameterData. */
+	int param(byte[] d, int p) {
+		int b0 = d[p] & 0xff;
+		switch (b0 & 0xf) {
+			case 0: {
+				int v = b0 >> 4 | (d[p + 1] & 0xff) << 4 | (d[p + 2] & 0xff) << 12;
+				return v << 12 >> 12;
+			}
+			case 1: {
+				int hi = (short) u16(d, p + 1);
+				int lo = (short) u16(d, p + 3);
+				return lo + (int) (Math.random() * (hi - lo + 1));
+			}
+			case 2:
+				return vars.get(b0 >> 4 | (d[p + 1] & 0xff) << 4);
+			case 3: {
+				int i = d[p + 1] & 0xff;
+				return i < 0x14 ? vars.sys[i] : w.systemValue(i);
+			}
+			case 4:
+				return w.heroInt(d[p + 1] & 0xff);
+			case 5:
+				return w.itemCount(b0 >> 4 | (d[p + 1] & 0xff) << 4);
+			case 7:
+				return b0 >> 4 | (d[p + 1] & 0xff) << 4;
+			default:
+				return 0;
+		}
+	}
+
+	/** CalcPhaseAssignment: target, operator (bit 7: the value is "a op b"), value. */
+	private void assign(byte[] d, int p) {
+		int kind = d[p] & 0xf;
+		int index = kind == 2 ? (d[p] & 0xff) >> 4 | (d[p + 1] & 0xff) << 4 : d[p + 1] & 0xff;
+		int op = d[p + 2] & 0xff;
+		int q = p + 3;
+		int v = param(d, q);
+		if ((op & 0x80) != 0) {
+			op &= 0x7f;
+			int len = EventScript.parameterLen(d, q);
+			int bin = d[q + len] & 0xff;
+			if (bin < 0xd) {
+				int y = param(d, q + len + 1);
+				v = switch (bin) {
+					case 1 -> v + y;
+					case 2 -> v - y;
+					case 3 -> v * y;
+					case 4 -> y == 0 ? 0 : v / y;
+					case 5 -> y == 0 ? 0 : v % y;
+					case 6 -> v & y;
+					case 7 -> v | y;
+					case 8 -> v ^ y;
+					case 9 -> v << (y & 0xff);
+					case 10 -> v >> (y & 0xff);
+					case 0xb -> (v & 1 << (y & 0xff)) != 0 ? 1 : 0;
+					case 0xc -> (v & 1 << (y & 0xff)) == 0 ? 1 : 0;
+					default -> v;
+				};
+			} else {
+				v = bin == 0xd ? (v != 0 ? 1 : 0) : (v == 0 ? 1 : 0);
+			}
+		}
+		int old = switch (kind) {
+			case 2 -> vars.get(index);
+			case 3 -> index < 0x14 ? vars.sys[index] : 0;
+			default -> w.heroInt(index);
+		};
+		int nv = switch (op) {
+			case 0 -> v;
+			case 1 -> old + v;
+			case 2 -> old - v;
+			case 3 -> old * v;
+			case 4 -> v == 0 ? old : old / v;
+			case 5 -> v == 0 ? old : old % v;
+			case 6 -> old & v;
+			case 7 -> old | v;
+			default -> old;
+		};
+		switch (kind) {
+			case 2 -> vars.set(index, nv);
+			case 3 -> {
+				if (index < 0x14) {
+					vars.sys[index] = nv;
+				}
+			}
+			default -> w.setHeroInt(index, nv);
+		}
+	}
+}

@@ -57,7 +57,12 @@ public final class MonsterAnim {
 
 	/** Composes one animation step into an image, or null when nothing in it can be decoded. */
 	public PartSprites.Pose pose(int monsterId, int state, int step) throws IOException {
-		return sprites.compose(parts(monsterId, state, step), false);
+		return pose(monsterId, state, step, false);
+	}
+
+	/** The same, mirrored left-right when {@code mirror}. */
+	PartSprites.Pose pose(int monsterId, int state, int step, boolean mirror) throws IOException {
+		return sprites.compose(parts(monsterId, state, step), mirror);
 	}
 
 	/**

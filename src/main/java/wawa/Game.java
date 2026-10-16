@@ -73,18 +73,44 @@ public final class Game extends JFrame {
 	private int heroY = 12;
 	/** The hero record InitHero / InitHeroState build; derived values are recomputed every tick. */
 	private Hero hero;
-	/** Phase state mirrored from InitPhase/CalcGamePlay: 8-slot queue, pause flag, cooldown. */
-	private final PhaseQueue phases = new PhaseQueue();
-	private boolean phasePaused;
-	private int pendingSteps;
-	private int menuCooldown;
+	/** The event interpreter, its text box, and the stage it moves ({@link Stage}). */
+	private TalkBox talk;
+	private EventRunner events;
+	private Gsac imoticon;
+	/** Opcode 45's screen fade: 0 clear .. 8 full, the step per frame, and white or black. */
+	private int fade;
+	private int fadeStep;
+	private boolean fadeWhite;
+	/** AddSwing frames left. */
+	private int shake;
+	/** A script camera: the cell the view centres on, or a unit it follows; null follows the hero. */
+	private int[] camCentre;
+	private Monster camUnit;
+	private boolean heroHidden;
+	/** A scripted hero walk (83): target cell, arrival direction (8 keeps), frames to the next step. */
+	private int heroGoX = -1;
+	private int heroGoY;
+	private int heroGoDir;
+	private int heroGoWait;
+	/** AddImoticon entries: target (null = hero), kind, frames drawn. */
+	private final List<Emote> emotes = new ArrayList<>();
+	private int frames;
+	/**
+	 * The hero record's integers from +0xa4 that scripts read and write (kind 4) and this port has
+	 * no field for; level (2) and HP (3) map onto {@link Hero}. Saved with the slot like the record.
+	 */
+	private int[] heroInts = new int[0x100];
 	private Item items;
 	private HeroAnim heroAnim;
 	/**
-	 * The hero record's direction byte (+5) as this port reads ani_hero: 0 up, 1 down, 2 right,
-	 * 3 left (drawn as 2 mirrored). Which screen side 2 faces is inferred from the frames.
+	 * The hero record's direction byte (+5), numbered like units (CollMonsPath): 0 up, 1 down,
+	 * 2 left, 3 right (ani_hero draws 3 as 2 mirrored), 4..7 diagonals. The t01 script walks the hero
+	 * left with arrival direction 2 ({@code 83 0b 0f 02}), which fixes 2 as left.
 	 */
 	private int heroDir = 1;
+	private static final int[][] DIR_STEP = {
+		{ 0, -1 }, { 0, 1 }, { -1, 0 }, { 1, 0 }, { 1, -1 }, { -1, 1 }, { -1, -1 }, { 1, 1 }
+	};
 	private int gold = 300;
 	private int potions = 3;
 	/**
@@ -111,6 +137,10 @@ public final class Game extends JFrame {
 		// the port expects a loaded map, so a01 stands loaded underneath.
 		loadMap(MAP_CODES[0]);
 		heroAnim = new HeroAnim(assets, so);
+		talk = new TalkBox(assets, so);
+		events = new EventRunner(new Stage(), talk);
+		events.global = EventScript.global(assets);
+		imoticon = Gsac.loadCompanion(assets.resolve("img/imoticon.png"));
 		slotScreen = new SlotScreen(assets, so, items, readSummaries());
 		opening = new TitleScreen(assets);
 
@@ -141,7 +171,7 @@ public final class Game extends JFrame {
 		addMouseListener(new MouseAdapter() {
 			@Override
 			public void mousePressed(MouseEvent e) {
-				if (!selecting) {
+				if (!selecting && !events.active()) {
 					onClick(e);
 				}
 			}
@@ -164,6 +194,7 @@ public final class Game extends JFrame {
 		hero = new Hero(so, heroClass);
 		hero.name = name;
 		hero.weapon = items.create(STARTING_WEAPON, 0, rng);
+		heroInts = new int[0x100];
 		hero.recompute(rng);
 		hero.hp = hero.maxHp;
 	}
@@ -175,9 +206,11 @@ public final class Game extends JFrame {
 			load();
 			selecting = false;
 		} else if (action instanceof SlotScreen.Action.NewGame n) {
-			// KeyPressGOrderNewGame: InitHero(class), LoadGameMap("t01"), SaveSlot(slot).
+			// KeyPressGOrderNewGame: InitHero(class), LoadGameMap("t01", 2), SaveSlot(slot), then
+			// ExitShiftMap's SearchPhase starts t01's opening event.
 			slotIndex = n.slot();
 			newHero(n.heroClass(), n.name());
+			newEvents();
 			try {
 				loadMap("t01");
 			} catch (IOException e) {
@@ -186,6 +219,7 @@ public final class Game extends JFrame {
 			playMillis = 0;
 			save();
 			selecting = false;
+			enterEvents();
 		} else if (action instanceof SlotScreen.Action.Delete d) {
 			try {
 				Files.deleteIfExists(saveFile(d.slot()));
@@ -248,16 +282,40 @@ public final class Game extends JFrame {
 		heroY = map.height / 2;
 		monsters.clear();
 		spawnMonsters();
+		camCentre = null;
+		camUnit = null;
+		heroHidden = false;
+		heroGoX = -1;
+		emotes.clear();
 		log = area.name + " (" + map.width + "x" + map.height + ") 진입.";
+	}
+
+	/** InitSelectSlot: script variables start from zero for the slot being opened. */
+	private void newEvents() {
+		EventScript.Table global = events.global;
+		events = new EventRunner(new Stage(), talk);
+		events.global = global;
+	}
+
+	/** LoadGameMap with a non-zero mode, then ExitShiftMap's SearchPhase. */
+	private void enterEvents() {
+		events.loadMap(EventScript.map(assetsRoot, mapCode));
+		events.searchPhase();
 	}
 
 	/** One CalcGamePlay tick in the original order. */
 	private void gameTick() {
-		if (phasePaused) {
+		frames++;
+		tickEffects();
+		if (events.active()) {
+			// CalcGamePlay keeps moving the hero and units while a phase runs; monsters stand still
+			// (SetPhaseHeroStop sets their 0x2000 bit) and the player's input goes to the phase.
+			scriptMoves();
+			events.calcPhase();
+			events.frame();
 			return;
 		}
 		initHeroState();
-		calcHeroAct();
 		monsterTick();
 		calcHeroRun();
 		postValues();
@@ -266,33 +324,11 @@ public final class Game extends JFrame {
 				m.atkOnce = false;
 			}
 		}
-		if (pendingSteps > 0) {
-			pendingSteps--;
-			if (pendingSteps == 0) {
-				PhaseQueue.Step s = phases.pop();
-				if (PhaseQueue.contains(s, heroX, heroY)) {
-					log = "현재 구역이 끝났다.";
-				}
-				menuCooldown = 720;
-			}
-		}
 	}
 
 	/** InitHeroState: the original recomputes the hero's derived stats every tick. */
 	private void initHeroState() {
 		hero.recompute(rng);
-	}
-
-	/** CalcHeroAct: resolve a queued step that reaches the hero. */
-	private void calcHeroAct() {
-		PhaseQueue.Step s = phases.peek();
-		if (s == null) {
-			return;
-		}
-		if (PhaseQueue.contains(s, heroX, heroY) && pendingSteps == 0) {
-			phases.pop();
-			log = "퀘스트 단계를 완료했다.";
-		}
 	}
 
 	/** CalcHeroRun: commit movement, clamped to the map. */
@@ -319,23 +355,30 @@ public final class Game extends JFrame {
 	 * LoadMonsToMap: one monster per record of the area's .mbk. Position, facing, name and sprite
 	 * come from the shipped data, and InitMonsAbility's stats at level = area base level + the
 	 * record's level nibble wherever the id has a stat row; ids past the tables fall back to this
-	 * port's tiers.
+	 * port's tiers. The record number is the unit id scripts address (+0x4e); ids from 0xa6 up
+	 * are NPCs (ChangeMonsDir's test), which stand in their ani_* pose and never fight.
 	 */
 	private void spawnMonsters() {
 		int[] hpTier = { 30, 45, 60, 80, 140 };
 		int[] atkTier = { 6, 9, 12, 15, 24 };
-		for (MonsterTable.Record r : monsterTable.records) {
+		for (int i = 0; i < monsterTable.records.size(); i++) {
+			MonsterTable.Record r = monsterTable.records.get(i);
 			int level = area.baseLevel + r.level;
 			MonsterStats.Ability ab = monsterStats == null ? null : monsterStats.ability(r.monsterId, level);
 			int tier = Math.min(hpTier.length - 1, (r.monsterId % 210) / 42);
-			boolean aggressive = tier >= 2;
+			boolean npc = r.monsterId >= NPC_ID;
 			String name = monsterSprites == null ? null : monsterSprites.name(r.monsterId);
 			Monster m = new Monster(r.cellX, r.cellY, name != null ? name : "몬스터#" + r.monsterId,
 					ab != null ? ab.hp() : hpTier[tier], ab != null ? ab.attack() : atkTier[tier],
-					r.monsterId, aggressive, Math.max(0, r.cellX - 2), Math.max(0, r.cellY - 2),
+					r.monsterId, !npc && tier >= 2, Math.max(0, r.cellX - 2), Math.max(0, r.cellY - 2),
 					r.cellX + 2, r.cellY + 2);
 			m.facing = r.direction;
 			m.level = level;
+			m.uid = i;
+			if (npc) {
+				m.npc = true;
+				changeDir(m, 1, r.direction == 8 ? rng.nextInt(8) : r.direction);
+			}
 			if (ab != null) {
 				m.defence = ab.defence();
 				m.accuracy = ab.accuracy();
@@ -353,7 +396,7 @@ public final class Game extends JFrame {
 	 */
 	private void monsterTick() {
 		for (Monster m : monsters) {
-			if (m.hp <= 0) {
+			if (m.hp <= 0 || m.npc) {
 				continue;
 			}
 			int dx = Integer.compare(heroX, m.x);
@@ -441,11 +484,17 @@ public final class Game extends JFrame {
 			}
 			return;
 		}
+		// KeyPressGamePlay hands every key to KeyPressPhase first; a running phase eats it.
+		if (events.key(code)) {
+			repaint();
+			return;
+		}
 		switch (code) {
 			case KeyEvent.VK_LEFT, KeyEvent.VK_A -> step(-1, 0);
 			case KeyEvent.VK_RIGHT, KeyEvent.VK_D -> step(1, 0);
 			case KeyEvent.VK_UP, KeyEvent.VK_W -> step(0, -1);
 			case KeyEvent.VK_DOWN, KeyEvent.VK_S -> step(0, 1);
+			case KeyEvent.VK_ENTER, KeyEvent.VK_SPACE -> talkToNpc();
 			case KeyEvent.VK_1 -> attackNearest();
 			case KeyEvent.VK_2 -> drinkPotion();
 			case KeyEvent.VK_F5 -> save();
@@ -458,6 +507,7 @@ public final class Game extends JFrame {
 				if (idx >= 0 && idx < MAP_CODES.length) {
 					try {
 						loadMap(MAP_CODES[idx]);
+						enterEvents();
 					} catch (IOException e) {
 						log = "맵 로드 실패: " + e;
 					}
@@ -493,7 +543,7 @@ public final class Game extends JFrame {
 			return;
 		}
 		Monster target = monsterAt(gx, gy);
-		if (target != null && Math.abs(gx - heroX) <= 1 && Math.abs(gy - heroY) <= 1) {
+		if (target != null && !target.npc && Math.abs(gx - heroX) <= 1 && Math.abs(gy - heroY) <= 1) {
 			attack(target);
 		} else {
 			walkTo(gx, gy);
@@ -511,7 +561,7 @@ public final class Game extends JFrame {
 			log = ".mon스터가 길을 막고 있다.";
 			return;
 		}
-		heroDir = dy < 0 ? 0 : dy > 0 ? 1 : dx > 0 ? 2 : 3;
+		heroDir = dy < 0 ? 0 : dy > 0 ? 1 : dx < 0 ? 2 : 3;
 		heroX = nx;
 		heroY = ny;
 	}
@@ -543,7 +593,7 @@ public final class Game extends JFrame {
 		int bestDist = Integer.MAX_VALUE;
 		for (Monster m : monsters) {
 			int d = Math.abs(m.x - heroX) + Math.abs(m.y - heroY);
-			if (d <= 1 && d < bestDist) {
+			if (d <= 1 && d < bestDist && !m.npc) {
 				best = m;
 				bestDist = d;
 			}
@@ -623,15 +673,57 @@ public final class Game extends JFrame {
 		g.setColor(new Color(250, 230, 150));
 		g.drawString(log, MAP_X, foot + 14);
 		g.setColor(new Color(170, 165, 150));
-		g.drawString("[방향키] 이동  [클릭] 이동/전투  [1] 공격  [2] 물약  [F5] 저장  [F9] 불러오기"
+		g.drawString("[방향키] 이동  [Enter] 대화  [클릭] 이동/전투  [1] 공격  [2] 물약  [F5] 저장  [F9] 불러오기"
 				+ "  [3~` ] 12개 지형 전환  [ESC] 종료",
 				MAP_X, foot + 30);
+		if (events.active()) {
+			// DrawPhase works on the original 480x320 screen; fit it to the window like the slot screen.
+			BufferedImage overlay = new BufferedImage(TalkBox.W, TalkBox.H, BufferedImage.TYPE_INT_ARGB);
+			Graphics2D og = overlay.createGraphics();
+			og.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+			events.draw(og);
+			og.dispose();
+			int w = VIEW_W * CELL + 16;
+			// Text loses strokes under nearest-neighbour downscaling, so this one scales smoothly.
+			g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+			g.drawImage(overlay, 0, 0, w, w * TalkBox.H / TalkBox.W, null);
+		}
 	}
 
-	/** Draws the tile grid with a camera centred on the hero, using the DrawTile cell rule. */
+	/** The view origin in cells: a script camera or unit, else centred on the hero. */
+	private int[] camera() {
+		int cx = heroX;
+		int cy = heroY;
+		if (camUnit != null && monsters.contains(camUnit)) {
+			cx = camUnit.x;
+			cy = camUnit.y;
+		} else if (camCentre != null) {
+			cx = camCentre[0];
+			cy = camCentre[1];
+		}
+		return new int[] {
+			Math.max(0, Math.min(map.width - VIEW_W, cx - VIEW_W / 2)),
+			Math.max(0, Math.min(map.height - VIEW_H, cy - VIEW_H / 2))
+		};
+	}
+
+	/** A sprite whose anchor goes on a cell centre, at the view scale. */
+	private static void drawPose(Graphics2D g, PartSprites.Pose pose, int cx, int cy) {
+		BufferedImage spr = pose.image();
+		g.drawImage(spr, cx - pose.anchorX() * CELL / TILE, cy - pose.anchorY() * CELL / TILE,
+				Math.max(1, spr.getWidth() * CELL / TILE), Math.max(1, spr.getHeight() * CELL / TILE), null);
+	}
+
+	/** Draws the tile grid with the camera, using the DrawTile cell rule, then units and the hero. */
 	private void drawTiles(Graphics2D g) {
-		int camX = Math.max(0, Math.min(map.width - VIEW_W, heroX - VIEW_W / 2));
-		int camY = Math.max(0, Math.min(map.height - VIEW_H, heroY - VIEW_H / 2));
+		int[] cam = camera();
+		int camX = cam[0];
+		int camY = cam[1];
+		// AddSwing: the amplitude and pattern are not traced; a 2 px side-to-side jolt stands in.
+		int swing = shake > 0 ? (shake % 2 == 0 ? 2 : -2) : 0;
+		g.translate(swing, 0);
+		int ox = MAP_X + CELL / 2;
+		int oy = MAP_Y + CELL / 2;
 		for (int y = camY; y < camY + VIEW_H; y++) {
 			for (int x = camX; x < camX + VIEW_W; x++) {
 				int cell = map.cell(x, y);
@@ -648,45 +740,577 @@ public final class Game extends JFrame {
 			}
 		}
 		for (Monster m : monsters) {
-			int px = MAP_X + (m.x - camX) * CELL;
-			int py = MAP_Y + (m.y - camY) * CELL;
-			if (m.x < camX || m.y < camY || m.x >= camX + VIEW_W || m.y >= camY + VIEW_H) {
+			if (m.hidden || m.x < camX || m.y < camY || m.x >= camX + VIEW_W || m.y >= camY + VIEW_H) {
 				continue;
 			}
+			int cx = ox + (m.x - camX) * CELL;
+			int cy = oy + (m.y - camY) * CELL;
 			// InitMonsOne puts the monster's position at the cell centre and DrawMonsAnim draws every
 			// part relative to it, so the pose's anchor goes there; the view scale carries over.
-			PartSprites.Pose pose = monsterSprites == null ? null : monsterSprites.standing(m.variant);
+			PartSprites.Pose pose = monsterSprites == null ? null
+					: m.ani >= 0 ? monsterSprites.pose(m.variant, m.ani, frames, m.mirror)
+					: monsterSprites.standing(m.variant);
 			if (pose != null) {
-				BufferedImage spr = pose.image();
-				int w = Math.max(1, spr.getWidth() * CELL / TILE);
-				int h = Math.max(1, spr.getHeight() * CELL / TILE);
-				g.drawImage(spr, px + CELL / 2 - pose.anchorX() * CELL / TILE,
-						py + CELL / 2 - pose.anchorY() * CELL / TILE, w, h, null);
+				drawPose(g, pose, cx, cy);
 			} else {
 				g.setColor(m.color());
-				g.fillOval(px + 4, py + 4, CELL - 8, CELL - 8);
-				g.setColor(Color.BLACK);
-				g.drawOval(px + 4, py + 4, CELL - 8, CELL - 8);
+				g.fillOval(cx - CELL / 2 + 4, cy - CELL / 2 + 4, CELL - 8, CELL - 8);
 			}
-			bar(g, px + 2, py + CELL - 5, (float) m.hp / m.maxHp, new Color(220, 60, 60));
+			if (!m.npc) {
+				bar(g, cx - CELL / 2 + 2, cy + CELL / 2 - 5, (float) m.hp / m.maxHp, new Color(220, 60, 60));
+			}
 		}
-		int hx = MAP_X + (heroX - camX) * CELL;
-		int hy = MAP_Y + (heroY - camY) * CELL;
-		// DrawHeroAnim: the hero's position is the cell centre, as for monsters.
-		PartSprites.Pose pose;
-		try {
-			pose = heroAnim.pose(HeroAnim.wearing(items, hero.weapon, heroDir, HeroAnim.ACT_STAND),
-					(int) (playMillis / 124));
-		} catch (IOException e) {
-			pose = null;
+		int hx = ox + (heroX - camX) * CELL;
+		int hy = oy + (heroY - camY) * CELL;
+		if (!heroHidden) {
+			// DrawHeroAnim: the hero's position is the cell centre, as for monsters.
+			try {
+				PartSprites.Pose pose = heroAnim.pose(HeroAnim.wearing(items, hero.weapon, heroDir & 3,
+						HeroAnim.ACT_STAND), frames / 2);
+				if (pose != null) {
+					drawPose(g, pose, hx, hy);
+				}
+			} catch (IOException e) {
+				log = "영웅 그림 실패: " + e;
+			}
+			if (!events.active()) {
+				bar(g, hx - CELL / 2, hy + CELL / 2 - 5, (float) hero.hp / hero.maxHp, new Color(80, 220, 120));
+			}
 		}
-		if (pose != null) {
-			BufferedImage spr = pose.image();
-			g.drawImage(spr, hx + CELL / 2 - pose.anchorX() * CELL / TILE, hy + CELL / 2 - pose.anchorY() * CELL / TILE,
-					Math.max(1, spr.getWidth() * CELL / TILE), Math.max(1, spr.getHeight() * CELL / TILE), null);
+		for (Emote e : emotes) {
+			if (e.target == null) {
+				drawEmote(g, e, hx, hy - 0x28 * CELL / TILE);
+			} else if (monsters.contains(e.target)) {
+				Monster m = e.target;
+				int lift = so.u8(UNIT_HEIGHT + monsterSprites.kind(m.variant));
+				drawEmote(g, e, ox + (m.x - camX) * CELL, oy + (m.y - camY) * CELL - lift * CELL / TILE);
+			}
 		}
-		bar(g, hx, hy + CELL - 5, (float) hero.hp / hero.maxHp, new Color(80, 220, 120));
+		g.translate(-swing, 0);
+		if (fade > 0) {
+			int a = Math.min(255, fade * 32);
+			g.setColor(fadeWhite ? new Color(255, 255, 255, a) : new Color(0, 0, 0, a));
+			g.fillRect(MAP_X, MAP_Y, VIEW_W * CELL, VIEW_H * CELL);
+		}
 	}
+
+	/**
+	 * DrawImoticon: a base clip, then from frame 3 the kind's overlay clip; clips are
+	 * {s16 dx, s16 dy, s16 frame} into img/imoticon.
+	 */
+	private void drawEmote(Graphics2D g, Emote e, int x, int y) {
+		int t = e.frame;
+		int k = e.kind;
+		clip(g, k == 0 || k == 2 ? (t < 2 ? t + 3 : 5) : (t < 2 ? t : 2), x, y);
+		if (t > 2) {
+			clip(g, so.u8(EMOTE_OVERLAY + k * 8 + Math.min(t - 3, 7)), x, y);
+			if (k == 5 && t - 3 > 3) {
+				clip(g, 20, x, y);
+			}
+			if (k == 5 && t - 3 > 6) {
+				clip(g, 21, x, y);
+			}
+		}
+	}
+
+	private void clip(Graphics2D g, int c, int x, int y) {
+		BufferedImage f = imoticon.frame(so.s16(EMOTE_CLIP + c * 8 + 4));
+		if (f != null) {
+			g.drawImage(f, x + so.s16(EMOTE_CLIP + c * 8) * CELL / TILE, y + so.s16(EMOTE_CLIP + c * 8 + 2) * CELL / TILE,
+					f.getWidth() * CELL / TILE, f.getHeight() * CELL / TILE, null);
+		}
+	}
+
+	/** Monster ids from here up are NPCs (ChangeMonsDir's 0xa6 test). */
+	private static final int NPC_ID = 0xa6;
+	/** ChangeMonsDir's ani table: s8 per (id * 10 + state) * 2 + row; -99 = no such state. */
+	private static final int UNIT_ANI = 0xbec2c;
+	/** Per-id flag byte; negative pins row 0. */
+	private static final int UNIT_FLAGS = 0xc1574;
+	/** DrawImoticon's lift above a unit, per kind. */
+	private static final int UNIT_HEIGHT = 0xc08d4;
+	private static final int EMOTE_OVERLAY = 0xdc108;
+	private static final int EMOTE_CLIP = 0xe5194;
+	/** CollMonsPath moves an NPC 6 px a frame, the hero 8: frames per 16 px cell. */
+	private static final int UNIT_STEP_FRAMES = 3;
+	private static final int HERO_STEP_FRAMES = 2;
+
+	/**
+	 * ChangeMonsDir(m, state, dir): the effective state's ani entry for the row the direction
+	 * picks (up 1, down 0, sideways keeps), mirrored for the other side. Dir 8 keeps the direction.
+	 */
+	private void changeDir(Monster m, int state, int dir) {
+		if (dir == 8) {
+			dir = m.dir;
+		}
+		int s = state <= 9 ? state : state == 0xd ? 9 : state == 0xe || state == 0x11 || state == 0x12 ? 1
+				: state == 0xf || state == 0x10 ? 8 : 3;
+		if ((byte) so.u8(UNIT_FLAGS + m.variant) < 0) {
+			m.row = 0;
+		} else if (dir == 0 || dir == 4 || dir == 6) {
+			m.row = 1;
+		} else if (dir == 1 || dir == 5 || dir == 7) {
+			m.row = 0;
+		}
+		int ani = (byte) so.u8(UNIT_ANI + (m.variant * 10 + s) * 2 + m.row);
+		if (ani != -99) {
+			m.ani = ani;
+		}
+		if (dir == 3 || dir == 4 || dir == 7) {
+			m.mirror = m.row == 0;
+		} else if (dir == 2 || dir == 5 || dir == 6) {
+			m.mirror = m.row != 0;
+		}
+		m.dir = dir;
+	}
+
+	/** Per-frame decay of the fade, the shake and the emote bubbles (16 frames each). */
+	private void tickEffects() {
+		fade = Math.max(0, Math.min(8, fade + fadeStep));
+		if (fade == 0 || fade == 8) {
+			fadeStep = 0;
+		}
+		if (shake > 0) {
+			shake--;
+		}
+		emotes.removeIf(e -> ++e.frame > 15);
+	}
+
+	/** CalcHeroAct / CalcMonsRun for script walks: one cell per step time, straight or diagonal. */
+	private void scriptMoves() {
+		if (heroGoX >= 0 && --heroGoWait <= 0) {
+			int dx = Integer.compare(heroGoX, heroX);
+			int dy = Integer.compare(heroGoY, heroY);
+			if (dx == 0 && dy == 0) {
+				if (heroGoDir != 8) {
+					heroDir = heroGoDir & 3;
+				}
+				heroGoX = -1;
+			} else {
+				heroX += dx;
+				heroY += dy;
+				heroDir = dx < 0 ? 2 : dx > 0 ? 3 : dy < 0 ? 0 : 1;
+				heroGoWait = HERO_STEP_FRAMES;
+			}
+		}
+		for (Monster m : monsters) {
+			if (m.lock > 0 && --m.lock == 0) {
+				changeDir(m, 1, 8);
+			}
+			if (m.goX < 0 || --m.goWait > 0) {
+				continue;
+			}
+			int dx = Integer.compare(m.goX, m.x);
+			int dy = Integer.compare(m.goY, m.y);
+			if (dx == 0 && dy == 0) {
+				m.goX = -1;
+				changeDir(m, 1, m.goDir);
+				continue;
+			}
+			m.x += dx;
+			m.y += dy;
+			changeDir(m, 3, stepDir(dx, dy));
+			m.goWait = UNIT_STEP_FRAMES;
+		}
+	}
+
+	private static int stepDir(int dx, int dy) {
+		for (int d = 0; d < DIR_STEP.length; d++) {
+			if (DIR_STEP[d][0] == dx && DIR_STEP[d][1] == dy) {
+				return d;
+			}
+		}
+		return 1;
+	}
+
+	private Monster unit(int uid) {
+		for (Monster m : monsters) {
+			if (m.uid == uid) {
+				return m;
+			}
+		}
+		return null;
+	}
+
+	/** CheckHeroOnNPC: OK next to an NPC runs its type-4 event. */
+	private void talkToNpc() {
+		for (Monster m : monsters) {
+			if (m.npc && !m.hidden && Math.abs(m.x - heroX) <= 1 && Math.abs(m.y - heroY) <= 1) {
+				changeDir(m, 1, stepDir(Integer.compare(heroX, m.x), Integer.compare(heroY, m.y)));
+				npcName = m.kind;
+				if (events.searchUnit(4, m.uid)) {
+					return;
+				}
+			}
+		}
+	}
+
+	private String npcName = "";
+
+	/** An AddImoticon entry. */
+	private static final class Emote {
+		final Monster target;
+		int kind;
+		int frame;
+
+		Emote(Monster target, int kind) {
+			this.target = target;
+			this.kind = kind;
+		}
+	}
+
+	/** What the event interpreter moves: this game's hero, units, camera, screen and items. */
+	private final class Stage implements EventRunner.World {
+		@Override
+		public void heroStop() {
+			// SetPhaseHeroStop freezes the hero and monsters; gameTick already skips both while a
+			// phase runs, and a player walk is one cell per key, so nothing is left to stop.
+		}
+
+		@Override
+		public void heroPlace(int x, int y, int dir) {
+			if (x != 0xff || y != 0xff) {
+				heroX = x;
+				heroY = y;
+			}
+			if (dir != 8) {
+				heroDir = dir & 3;
+			}
+			heroGoX = -1;
+		}
+
+		@Override
+		public void heroWalk(int x, int y, int dir) {
+			if (x == 0xff && y == 0xff) {
+				heroPlace(x, y, dir);
+				return;
+			}
+			if (events.mode == 2) {
+				heroPlace(x, y, dir);
+				return;
+			}
+			heroGoX = x;
+			heroGoY = y;
+			heroGoDir = dir;
+			heroGoWait = 1;
+		}
+
+		@Override
+		public void heroVisible(boolean visible, int x, int y, int dir) {
+			heroHidden = !visible;
+			heroPlace(x, y, dir);
+		}
+
+		@Override
+		public void heroAct(int dir, int act) {
+			if (dir != 8) {
+				heroDir = dir & 3;
+			}
+			if (act != 0) {
+				notPorted("영웅 행동 " + act);
+			}
+		}
+
+		@Override
+		public void heroToUnit(int uid, int side) {
+			// The side offsets sit in a WIPI table (0x5b72c / 0x5b735) not located in libwawa.so.
+			notPorted("영웅을 유닛 옆으로 이동");
+		}
+
+		@Override
+		public int unitSpawn(int a, int x, int y, int dir) {
+			int[] kinds = events.phaseHeader();
+			if (a >= kinds.length) {
+				return 4;
+			}
+			int uid = 0x100 + a;
+			Monster old = Game.this.unit(uid);
+			if (old != null) {
+				monsters.remove(old);
+			}
+			int id = kinds[a];
+			String name = monsterSprites.name(id);
+			Monster m = new Monster(x, y, name != null ? name : "#" + id, 1, 0, id, false, x, y, x, y);
+			m.uid = uid;
+			m.npc = true;
+			changeDir(m, (byte) so.u8(UNIT_ANI + id * 20) == -99 ? 1 : 0, dir == 8 ? rng.nextInt(8) : dir);
+			monsters.add(m);
+			return 4;
+		}
+
+		@Override
+		public int unit(int hi, int uid, int x, int y, int dir) {
+			Monster m = Game.this.unit(uid);
+			if (m == null) {
+				return -1;
+			}
+			switch (hi) {
+				case 1 -> monsters.remove(m);
+				case 2 -> {
+					m.x = x;
+					m.y = y;
+					m.goX = -1;
+					changeDir(m, 1, dir);
+				}
+				case 3 -> {
+					if (events.mode == 2) {
+						m.x = x;
+						m.y = y;
+						changeDir(m, 1, dir & 0x7f);
+					} else {
+						m.goX = x;
+						m.goY = y;
+						m.goDir = dir & 0x7f;
+						m.goWait = 1;
+						m.goHold = (dir & 0x80) == 0;
+					}
+				}
+				case 4 -> {
+					m.hidden = true;
+					return 4;
+				}
+				case 5 -> {
+					m.hidden = false;
+					return 4;
+				}
+				case 6 -> {
+					// x and y carry 63's dir and act; only the acts t01/t02 use are mapped.
+					int act = y;
+					int state = switch (act) {
+						case 0 -> 0;
+						case 1 -> 6;
+						case 2 -> 8;
+						case 3 -> 5;
+						case 4, 5 -> 9;
+						case 6 -> 0xd;
+						case 0x23 -> 3;
+						default -> -1;
+					};
+					if (state < 0) {
+						notPorted("유닛 행동 " + act);
+						return 0;
+					}
+					changeDir(m, state, x);
+					int[] entry = monsterSprites.animEntry(m.variant, m.ani);
+					// The lock lasts until the animation ends; the port plays two frames per step.
+					m.lock = entry == null ? 1 : Math.max(1, entry[2]) * 2;
+					return act == 3 ? -1 : 0;
+				}
+				default -> {
+				}
+			}
+			return 0;
+		}
+
+		@Override
+		public void mapObject(int obj, boolean visible) {
+			notPorted("맵 오브젝트 " + obj);
+		}
+
+		@Override
+		public boolean moving() {
+			if (heroGoX >= 0) {
+				return true;
+			}
+			for (Monster m : monsters) {
+				if (m.goX >= 0 && m.goHold || m.lock > 0) {
+					return true;
+				}
+			}
+			return false;
+		}
+
+		@Override
+		public void arriveAll() {
+			if (heroGoX >= 0) {
+				heroPlace(heroGoX, heroGoY, heroGoDir);
+			}
+			for (Monster m : monsters) {
+				if (m.goX >= 0) {
+					m.x = m.goX;
+					m.y = m.goY;
+					m.goX = -1;
+					changeDir(m, 1, m.goDir);
+				}
+			}
+		}
+
+		@Override
+		public void moveMap(String code) {
+			try {
+				loadMap(code);
+			} catch (IOException e) {
+				log = "맵 로드 실패: " + e;
+			}
+		}
+
+		@Override
+		public void reloadEvents() {
+			events.loadMap(EventScript.map(assetsRoot, mapCode));
+		}
+
+		@Override
+		public int fade(int k, int mode) {
+			switch (k) {
+				case 0, 3 -> {
+					fadeWhite = k == 3;
+					if (mode == 0) {
+						fadeStep = 1;
+						return 8;
+					}
+					fade = 8;
+				}
+				case 1, 4 -> {
+					if (mode == 0) {
+						fadeStep = -1;
+						return fade == 8 ? 8 : 6;
+					}
+					fade = 0;
+				}
+				case 2, 5 -> {
+					fadeWhite = k == 5;
+					fade = 8;
+					fadeStep = 0;
+				}
+				default -> notPorted("화면 효과 " + k);
+			}
+			return 0;
+		}
+
+		@Override
+		public void shake(int n) {
+			shake = n;
+		}
+
+		@Override
+		public void emote(int uid, int kind) {
+			Monster m = uid == EventRunner.HERO ? null : Game.this.unit(uid);
+			if (uid != EventRunner.HERO && m == null || kind >= 14) {
+				return;
+			}
+			for (Emote e : emotes) {
+				if (e.target == m) {
+					if (e.kind != kind) {
+						e.kind = kind;
+						e.frame = 0;
+					}
+					return;
+				}
+			}
+			if (emotes.size() < 10) {
+				emotes.add(new Emote(m, kind));
+			}
+		}
+
+		@Override
+		public void camera(int op, int x, int y, int target) {
+			switch (op) {
+				case 0 -> {
+					camCentre = null;
+					camUnit = null;
+				}
+				// 18 jumps and 28 scrolls to the cell corner (x * 16, y * 16); the port's camera is
+				// cell-aligned, so both centre on cell (x, y).
+				case 0x11, 0x12 -> {
+					camCentre = new int[] { x, y };
+					camUnit = null;
+				}
+				case 0x13, 0x14, 0x15, 0x16 -> {
+					camCentre = null;
+					camUnit = target == EventRunner.HERO ? null : Game.this.unit(target);
+				}
+				case 0x10 -> {
+					// 08 stops following; the view stays where it is.
+					int[] cam = Game.this.camera();
+					camCentre = new int[] { cam[0] + VIEW_W / 2, cam[1] + VIEW_H / 2 };
+					camUnit = null;
+				}
+				default -> notPorted("야영지 배치");
+			}
+		}
+
+		@Override
+		public boolean giveItem(int id, int count, int flags) {
+			Item.Instance it = items.create(id, 0, rng);
+			// GetGOrderEquipLevel refuses gear above the hero's level; there is no inventory to
+			// hold anything else yet, so only equippable weapons stay with the hero.
+			if ((flags & 2) != 0 && it.type() >= 1 && it.type() <= 3 && hero.level >= items.level(id)) {
+				hero.weapon = it;
+				hero.recompute(rng);
+				log = "무기 장착: #" + id;
+			} else {
+				log = "아이템 획득: #" + id + " x" + count;
+			}
+			return true;
+		}
+
+		@Override
+		public void takeItem(int id, int count) {
+			if (hero.weapon != null && hero.weapon.id() == id) {
+				hero.weapon = null;
+				hero.recompute(rng);
+			}
+		}
+
+		@Override
+		public void save() {
+			Game.this.save();
+		}
+
+		@Override
+		public int heroInt(int i) {
+			return switch (i) {
+				case 2 -> hero.level;
+				case 3 -> hero.hp;
+				default -> heroInts[i & 0xff];
+			};
+		}
+
+		@Override
+		public void setHeroInt(int i, int v) {
+			switch (i) {
+				case 2 -> hero.level = v;
+				case 3 -> hero.hp = Math.min(hero.maxHp, v);
+				default -> heroInts[i & 0xff] = v;
+			}
+		}
+
+		@Override
+		public int itemCount(int id) {
+			return hero.weapon != null && hero.weapon.id() == id ? 1 : 0;
+		}
+
+		@Override
+		public int systemValue(int i) {
+			return switch (i) {
+				case 0x14 -> (int) (playMillis * 12 / 1000);
+				case 0x16, 0x17 -> hero.heroClass;
+				case 0x1a -> (int) (System.currentTimeMillis() / 1000);
+				default -> 0;
+			};
+		}
+
+		@Override
+		public String heroName() {
+			return hero.name;
+		}
+
+		@Override
+		public String npcName() {
+			return npcName;
+		}
+
+		@Override
+		public void notPorted(String what) {
+			log = "[미포팅] " + what;
+			if (notPortedSeen.add(what)) {
+				System.out.println("[미포팅] " + what);
+			}
+		}
+	}
+
+	/** Every unported command a script reached, printed once each. */
+	private final java.util.Set<String> notPortedSeen = new java.util.LinkedHashSet<>();
 
 	/** Deterministic stand-in shading derived from the real cell byte. */
 	private static Color groundColour(int cell) {
@@ -740,14 +1364,23 @@ public final class Game extends JFrame {
 			p.setProperty("level", String.valueOf(hero.level));
 			p.setProperty("exp", String.valueOf(hero.exp));
 			p.setProperty("stats", hero.con + "," + hero.dex + "," + hero.str + "," + hero.intel);
-			p.setProperty("monsters", monsters.stream()
+			p.setProperty("vars", vars(events.vars));
+			StringBuilder ints = new StringBuilder();
+			for (int i = 0; i < heroInts.length; i++) {
+				if (heroInts[i] != 0) {
+					ints.append(i).append('=').append(heroInts[i]).append(';');
+				}
+			}
+			p.setProperty("heroInts", ints.toString());
+			// Units a phase spawned (uid 0x100 + n) live only as long as the scene; map units stay.
+			p.setProperty("monsters", monsters.stream().filter(m -> m.uid < 0x100)
 					.map(m -> String.join(",", String.valueOf(m.x), String.valueOf(m.y), m.kind,
 							String.valueOf(m.hp), String.valueOf(m.atk), String.valueOf(m.variant),
 							String.valueOf(m.aggressive), String.valueOf(m.loX), String.valueOf(m.loY),
 							String.valueOf(m.hiX), String.valueOf(m.hiY), String.valueOf(m.idle),
 							String.valueOf(m.state), String.valueOf(m.facing), String.valueOf(m.level),
 							String.valueOf(m.defence), String.valueOf(m.accuracy), String.valueOf(m.dodge),
-							String.valueOf(m.crit)))
+							String.valueOf(m.crit), String.valueOf(m.uid)))
 					.reduce((a, b) -> a + ";" + b).orElse(""));
 			try (OutputStream os = Files.newOutputStream(saveFile(slotIndex))) {
 				p.store(os, "wawa save slot " + slotIndex);
@@ -772,6 +1405,14 @@ public final class Game extends JFrame {
 			}
 			newHero(Integer.parseInt(p.getProperty("class", "0")), p.getProperty("name", ""));
 			playMillis = Long.parseLong(p.getProperty("playTime", "0")) * 1000 / 12;
+			newEvents();
+			restoreVars(events.vars, p.getProperty("vars", ""));
+			for (String kv : p.getProperty("heroInts", "").split(";")) {
+				if (!kv.isEmpty()) {
+					String[] f = kv.split("=");
+					heroInts[Integer.parseInt(f[0])] = Integer.parseInt(f[1]);
+				}
+			}
 			loadMap(p.getProperty("map", MAP_CODES[0]));
 			heroX = Integer.parseInt(p.getProperty("x", "10"));
 			heroY = Integer.parseInt(p.getProperty("y", "12"));
@@ -806,10 +1447,20 @@ public final class Game extends JFrame {
 						m.dodge = Integer.parseInt(f[17]);
 						m.crit = Integer.parseInt(f[18]);
 					}
+					if (f.length > 19) {
+						m.uid = Integer.parseInt(f[19]);
+					}
+					if (m.variant >= NPC_ID) {
+						m.npc = true;
+						m.aggressive = false;
+						changeDir(m, 1, 1);
+					}
 					monsters.add(m);
 				}
 			}
 			log = "불러오기 완료.";
+			// LoadSlot loads the map with mode 3: its events reload and SearchPhase runs.
+			enterEvents();
 		} catch (IOException | NumberFormatException e) {
 			log = "불러오기 실패: " + e;
 		}
@@ -818,6 +1469,32 @@ public final class Game extends JFrame {
 	/** One properties file per slot, the port's stand-in for slot%d.dat. */
 	private static Path saveFile(int slot) {
 		return Path.of(System.getProperty("wawa.save", "wawa-slot") + slot + ".properties");
+	}
+
+	/** SaveSlot's script-variable blocks (u8, 2-bit, 1-bit, system 0..0x13) as hex. */
+	private static String vars(EventScript.Vars v) {
+		StringBuilder s = new StringBuilder();
+		for (byte[] block : new byte[][] { v.u8, v.two, v.one }) {
+			for (byte b : block) {
+				s.append(String.format("%02x", b & 0xff));
+			}
+		}
+		for (int i : v.sys) {
+			s.append(String.format("%08x", i));
+		}
+		return s.toString();
+	}
+
+	private static void restoreVars(EventScript.Vars v, String hex) {
+		int at = 0;
+		for (byte[] block : new byte[][] { v.u8, v.two, v.one }) {
+			for (int i = 0; i < block.length && at + 2 <= hex.length(); i++, at += 2) {
+				block[i] = (byte) Integer.parseInt(hex.substring(at, at + 2), 16);
+			}
+		}
+		for (int i = 0; i < v.sys.length && at + 8 <= hex.length(); i++, at += 8) {
+			v.sys[i] = Integer.parseUnsignedInt(hex.substring(at, at + 8), 16);
+		}
 	}
 
 	/**
@@ -848,6 +1525,23 @@ public final class Game extends JFrame {
 		int accuracy;
 		int dodge;
 		int crit;
+		/** +0x4e: the record number for map units, 0x100 + n for units a phase spawned. */
+		int uid = -1;
+		boolean npc;
+		/** ChangeMonsDir's ani entry (+0x2c), row (+0x27), mirror (+0x28) and direction (+5). */
+		int ani = -1;
+		int row;
+		boolean mirror;
+		int dir = 1;
+		/** A script walk (33): target cell, arrival direction, frames to the next step, waited on. */
+		int goX = -1;
+		int goY;
+		int goDir;
+		int goWait;
+		boolean goHold;
+		boolean hidden;
+		/** Frames an action (63) holds the phase, as the 0x8000 lock does. */
+		int lock;
 
 		Monster(int x, int y, String kind, int hp, int atk, int variant, boolean aggressive,
 				int loX, int loY, int hiX, int hiY) {
@@ -934,6 +1628,24 @@ public final class Game extends JFrame {
 		onKey(KeyEvent.VK_RIGHT);
 		writeFrame(new java.io.File(dir, "newgame.png"));
 		onKey(KeyEvent.VK_ENTER);
+		// The new game's opening phase: tick it like the 62 ms timer, press OK every 12 frames to
+		// move the dialogue on, and keep a few frames of the scene.
+		int[] shots = { 30, 200, 420, 700, 1000, 1400 };
+		int tick = 0;
+		int shotAt = 0;
+		while (events.active() && tick < 8000) {
+			gameTick();
+			tick++;
+			if (tick % 12 == 0) {
+				onKey(KeyEvent.VK_ENTER);
+			}
+			if (shotAt < shots.length && tick == shots[shotAt]) {
+				writeFrame(new java.io.File(dir, "intro" + shotAt++ + ".png"));
+			}
+		}
+		writeFrame(new java.io.File(dir, "intro-end.png"));
+		System.out.println("intro frames=" + tick + " running=" + events.active() + " map=" + mapCode
+				+ " hero=" + heroX + "," + heroY + " var1=" + events.vars.get(1) + " notPorted=" + notPortedSeen);
 		loadMap(MAP_CODES[0]);
 		int[] keys = {
 			KeyEvent.VK_RIGHT, KeyEvent.VK_RIGHT, KeyEvent.VK_DOWN, KeyEvent.VK_DOWN,
