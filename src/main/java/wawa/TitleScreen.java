@@ -7,7 +7,6 @@ import java.awt.event.KeyEvent;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.file.Path;
-import javax.imageio.ImageIO;
 
 /**
  * The opening: DrawLogo's three logo screens, then DrawTitle and its Play / Options / Help menu.
@@ -67,7 +66,7 @@ final class TitleScreen {
 	}
 
 	private static BufferedImage image(Path assets, String name) throws IOException {
-		return ImageIO.read(assets.resolve(name).toFile());
+		return ResourceFile.image(assets.resolve(name));
 	}
 
 	/** True when Play was chosen and the slot screen should take over. */

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>와일드 프론티어 Java 포트</title>
+<style>
+  body { margin: 0; background: #111; color: #ddd; font-family: sans-serif; }
+  #pick { max-width: 640px; margin: 48px auto; line-height: 1.6; }
+  #pick input { margin: 16px 0; }
+  #status { color: #fc6; }
+  /* The window is 416x312 plus a title bar; the extra height keeps it clear of CheerpJ's banner. */
+  #display { width: 480px; height: 500px; margin: 24px auto; display: none; }
+</style>
+<script src="https://cjrtnc.leaningtech.com/4.3/loader.js"></script>
+</head>
+<body>
+<div id="pick">
+  <h1>와일드 프론티어 Java 포트</h1>
+  <p>가지고 있는 <code>wild.apk</code> 파일을 고르면 시작합니다. 파일은 이 브라우저 안에서만 풀리고
+  어디에도 올라가지 않습니다. 게임 자산은 원작(KTH) 저작물이라 이 사이트에 들어 있지 않습니다.</p>
+  <input type="file" id="apk" accept=".apk">
+  <p id="status"></p>
+  <p>조작: 방향키 이동, Enter 확인·대화, F 대화 빨리 넘기기, 1 공격, 2 물약, F5 저장, F9 불러오기.
+  저장은 이 브라우저에 남습니다. <a href="https://github.com/Camof1ow/wawa-java">소스</a></p>
+</div>
+<div id="display"></div>
+<script type="module">
+  import { unzipSync } from "https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js";
+
+  const status = (s) => (document.getElementById("status").textContent = s);
+  // CheerpJ serves this page's directory under /app/; the jar sits next to index.html.
+  const base = "/app" + location.pathname.replace(/[^/]*$/, "");
+  const ready = cheerpjInit({ version: 17, status: "splash", javaProperties: ["wawa.save=/files/wawa-slot"] });
+
+  document.getElementById("apk").addEventListener("change", async (ev) => {
+    const file = ev.target.files[0];
+    if (!file) return;
+    status("APK를 확인하는 중…");
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    // Only the entry names are looked at; Java reads the APK itself through its zip file system.
+    const names = new Set();
+    unzipSync(bytes, { filter: (f) => (names.add(f.name), false) });
+    if (!names.has("lib/armeabi/libwawa.so") || !names.has("assets/img/map.png")) {
+      status("와일드 프론티어 APK가 아닙니다.");
+      return;
+    }
+    await ready;
+    // /str/ holds plain files only (no directories), so the APK goes in as one file.
+    cheerpOSAddStringFile("/str/wild.apk", bytes);
+    status("Java 런타임을 시작하는 중… (처음에는 시간이 걸립니다)");
+    document.getElementById("pick").style.display = "none";
+    const display = document.getElementById("display");
+    display.style.display = "block";
+    cheerpjCreateDisplay(-1, -1, display);
+    await cheerpjRunMain("wawa.Game", base + "wawa.jar", "/str/wild.apk");
+  });
+</script>
+</body>
+</html>

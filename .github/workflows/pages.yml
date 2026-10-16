@@ -1,0 +1,46 @@
+name: 웹 빌드·Pages 배포
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      # CheerpJ runs Java 17 at most, so the jar is compiled for 17.
+      - name: wawa.jar
+        run: |
+          javac --release 17 -encoding UTF-8 -d build/classes $(find src -name '*.java')
+          mkdir -p build/site
+          jar --create --file build/site/wawa.jar --main-class wawa.Game -C build/classes .
+          cp web/index.html build/site/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

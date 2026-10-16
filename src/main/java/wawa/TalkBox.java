@@ -14,7 +14,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import javax.imageio.ImageIO;
 
 /**
  * The text an event phase shows, on the original 480x320 screen: the dialogue box (phase result
@@ -111,9 +110,9 @@ final class TalkBox {
 	TalkBox(Path assets, ElfImage so) throws IOException {
 		this.so = so;
 		this.assets = assets;
-		base = ImageIO.read(assets.resolve("talk/btn_dialogue_base.png").toFile());
-		fast = ImageIO.read(assets.resolve("talk/btn_fast_base.png").toFile());
-		slow = ImageIO.read(assets.resolve("talk/btn_slow_base.png").toFile());
+		base = ResourceFile.image(assets.resolve("talk/btn_dialogue_base.png"));
+		fast = ResourceFile.image(assets.resolve("talk/btn_fast_base.png"));
+		slow = ResourceFile.image(assets.resolve("talk/btn_slow_base.png"));
 		imenu = Gsac.loadCompanion(assets.resolve("img/imenu.png"));
 	}
 
@@ -568,7 +567,7 @@ final class TalkBox {
 		String file = expr == -1 ? "talk/face" + group + ".png" : "talk/face" + group + "_" + (expr - 1) + ".png";
 		BufferedImage img = faces.computeIfAbsent(file, f -> {
 			try {
-				return ImageIO.read(assets.resolve(f).toFile());
+				return ResourceFile.image(assets.resolve(f));
 			} catch (IOException e) {
 				return null;
 			}

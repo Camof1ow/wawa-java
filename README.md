@@ -47,18 +47,18 @@ Screenshots and measurements in these notes come from running the original in an
 
 ## Requirements
 
-- JDK 17 or newer (the port uses records and switch expressions).
-- An extracted copy of the original APK's `assets/` tree, which is **not** redistributed here.
-  The tools take its path as an argument, e.g. `assets/assets` for the APK's `assets/` directory.
-  `lib/armeabi/libwawa.so` sits next to it and is read for the monster tables.
+- JDK 17 or newer (the port uses records and switch expressions; the browser build targets 17).
+- The original `wild.apk`, which is **not** redistributed here. `wawa.Game` reads it in place
+  (assets and `lib/armeabi/libwawa.so`); the tools take an extracted `assets/` directory, with
+  `lib/armeabi/libwawa.so` next to it.
 
 ## Build and run
 
 ```bash
 javac -d out $(find src -name '*.java')
 
-# playable slice
-java -cp out wawa.Game <path-to-assets>
+# playable slice, straight from the APK or from an extracted assets/ directory
+java -cp out wawa.Game wild.apk
 
 # load every shipped map, area and monster table and report what came back
 java -cp out wawa.CheckMapsRun <path-to-assets>
@@ -67,9 +67,19 @@ java -cp out wawa.CheckMapsRun <path-to-assets>
 java -cp out wawa.ExtractAll <path-to-assets> <output-dir>
 ```
 
-`wawa.Game` supports `--selftest` to drive scripted input through the slot screen, a new game and
-a few fights, writing `out/slots.png`, `out/newgame.png`, `out/selftest.png` and
-`out/slots-after.png`, so the render can be checked without a GUI.
+`wawa.Game` supports `--selftest` to drive scripted input through the opening, the slot screen, a
+new game with t01's opening scene and a few fights, writing `out/logo.png`, `out/title*.png`,
+`out/slots.png`, `out/newgame.png`, `out/intro*.png`, `out/selftest.png` and `out/slots-after.png`,
+so the render can be checked without a GUI.
+
+## Play in the browser
+
+GitHub Pages serves `web/index.html` with `wawa.jar` (`.github/workflows/pages.yml` builds both on
+every push to `main`). The page runs the jar in CheerpJ 4.3 (Java 17, Community Edition: personal
+and non-business use only) and asks for your own `wild.apk`: it stays in the browser and is handed
+to Java as one in-memory file. Saves go to the browser's `/files/` store. To try it locally, serve
+a folder holding `index.html` and `wawa.jar` with a server that answers `Range` requests (CheerpJ
+needs them), e.g. `npx http-server`.
 
 ## Layout
 
@@ -84,6 +94,7 @@ a few fights, writing `out/slots.png`, `out/newgame.png`, `out/selftest.png` and
 | `src/main/java/wawa/{Hero,Item,Combat}.java` | hero record, item tables, hit resolution |
 | `src/main/java/wawa/{Gsac,RenderAtlas,ElfImage,ResourceFile}.java` | asset decoding |
 | `src/main/java/wawa/{CheckMaps,CheckMapsRun,ExtractAll,MatchSprite,FindBySize}.java` | tools |
+| `web/index.html`, `.github/workflows/pages.yml` | browser launcher (CheerpJ) and the Pages build |
 | `docs/FORMATS.md` | every asset format, with the function that proves it |
 | `docs/ORIGINAL-VM.md` | how to run the original locally, including the Dalvik patch it needs |
 | `PORT-BREAKDOWN.md` | what the APK is made of and the porting order |

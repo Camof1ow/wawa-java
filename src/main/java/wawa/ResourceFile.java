@@ -1,8 +1,11 @@
 package wawa;
 
+import java.awt.image.BufferedImage;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import javax.imageio.ImageIO;
 
 /**
  * The container every data file in this game is packed in, exactly as ReadMapFile decodes it:
@@ -60,6 +63,13 @@ final class ResourceFile {
 
 	static int u16(byte[] d, int off) {
 		return (d[off] & 0xFF) | ((d[off + 1] & 0xFF) << 8);
+	}
+
+	/** A plain PNG; through a stream, so it also reads from inside an APK. */
+	static BufferedImage image(Path p) throws IOException {
+		try (InputStream in = Files.newInputStream(p)) {
+			return ImageIO.read(in);
+		}
 	}
 
 	private ResourceFile() {

@@ -13,6 +13,7 @@ import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -346,9 +347,22 @@ public final class Game extends JFrame {
 		}
 	}
 
+	private static Path assets;
+
+	/**
+	 * The assets directory: an extracted tree, or {@code wild.apk} itself, read in place through
+	 * the zip file system (the browser build hands the APK over this way).
+	 */
 	private static Path assetsDir() {
-		String arg = System.getProperty("wawa.assets", "assets");
-		return Path.of(arg);
+		if (assets == null) {
+			Path p = Path.of(System.getProperty("wawa.assets", "assets"));
+			try {
+				assets = p.toString().endsWith(".apk") ? FileSystems.newFileSystem(p).getPath("/assets") : p;
+			} catch (IOException e) {
+				throw new java.io.UncheckedIOException(e);
+			}
+		}
+		return assets;
 	}
 
 	/**
