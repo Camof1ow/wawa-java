@@ -1,7 +1,6 @@
 package wawa;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 
 /**
  * Area metadata from assets/eng/mob&#47;*.png, the second ReadMapFile call in LoadGameMap
@@ -20,9 +19,6 @@ import java.nio.charset.StandardCharsets;
  * </pre>
  */
 public final class AreaInfo {
-
-	/** The blobs are EUC-KR; ASCII, which the eng locale uses, is a subset. */
-	private static final java.nio.charset.Charset KOREAN = java.nio.charset.Charset.forName("MS949");
 
 	public final String name;
 	public final int ambience;
@@ -68,7 +64,8 @@ public final class AreaInfo {
 		if (1 + nameLen + 7 > blob.length) {
 			throw new IOException("area name overruns blob: " + file);
 		}
-		String name = new String(blob, 1, nameLen, KOREAN);
+		// EUC-KR (the top-level locale); Ksc, because the browser runtime has no MS949 charset.
+		String name = Ksc.decode(blob, 1, nameLen);
 		int at = 1 + nameLen;
 		int ambience = blob[at] & 0xFF;
 		int baseLevel = (blob[at + 1] & 0xFF) + 1;
