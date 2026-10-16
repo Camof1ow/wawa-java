@@ -23,6 +23,9 @@ import java.nio.file.Path;
  */
 public final class AreaInfo {
 
+	/** The blobs are EUC-KR; ASCII, which the eng locale uses, is a subset. */
+	private static final java.nio.charset.Charset KOREAN = java.nio.charset.Charset.forName("MS949");
+
 	public final String name;
 	public final int ambience;
 	public final int weatherClass;
@@ -66,7 +69,7 @@ public final class AreaInfo {
 		if (1 + nameLen + 7 > blob.length) {
 			throw new IOException("area name overruns blob: " + file);
 		}
-		String name = new String(blob, 1, nameLen, StandardCharsets.UTF_8);
+		String name = new String(blob, 1, nameLen, KOREAN);
 		int at = 1 + nameLen;
 		int ambience = blob[at] & 0xFF;
 		int weatherClass = blob[at + 1] & 0xFF;

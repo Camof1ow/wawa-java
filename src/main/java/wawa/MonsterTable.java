@@ -28,6 +28,9 @@ import java.util.List;
  */
 public final class MonsterTable {
 
+	/** The blobs are EUC-KR; ASCII, which the eng locale uses, is a subset. */
+	private static final java.nio.charset.Charset KOREAN = java.nio.charset.Charset.forName("MS949");
+
 	public static final class Record {
 		public final int cellX;
 		public final int cellY;
@@ -73,7 +76,7 @@ public final class MonsterTable {
 		if (1 + nameLen > blob.length) {
 			throw new IOException("area name overruns blob: " + file);
 		}
-		String name = new String(blob, 1, nameLen, StandardCharsets.UTF_8);
+		String name = new String(blob, 1, nameLen, KOREAN);
 		return new MonsterTable(name, locate(blob, mapWidth, mapHeight));
 	}
 
