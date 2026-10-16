@@ -9,7 +9,7 @@
   @font-face { font-family: GalmuriMono11; src: url(GalmuriMono11.ttf) format("truetype"); }
   html, body { margin: 0; height: 100%; overflow: hidden; background: #000; color: #ddd; font-family: sans-serif; }
   body { display: flex; flex-direction: column; align-items: center; }
-  #bar { align-self: stretch; margin: 4px 8px; height: 18px; font-size: 13px; color: #fc6; white-space: nowrap; overflow: hidden; }
+  #bar { align-self: stretch; flex-shrink: 0; margin: 4px 8px; height: 18px; font-size: 13px; color: #fc6; white-space: nowrap; overflow: hidden; }
   #bar a { color: #9cf; float: right; }
   /* 416x312 is 4:3; the canvas grows to the largest 4:3 box under the status line. */
   #screen {
@@ -19,7 +19,8 @@
   }
   /* Holds keyboard focus so input methods compose here; invisible, over the canvas's top-left. */
   #ime { position: absolute; left: 0; top: 26px; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; }
-  #apk { margin-left: 8px; color: #ddd; }
+  #apk { margin-left: 8px; color: #ddd; font-size: 11px; vertical-align: top; }
+  #notice { flex-shrink: 0; max-width: 640px; margin: 24px 16px; padding: 12px 16px; border: 1px solid #fc6; line-height: 1.6; font-size: 14px; }
 </style>
 <script src="wawa.js"></script>
 <script>
@@ -55,6 +56,7 @@
     document.getElementById("status").textContent = text;
     const pick = document.getElementById("apk");
     pick.hidden = false;
+    document.getElementById("notice").hidden = false;
     pick.onchange = async () => {
       const file = pick.files[0];
       if (!file) return;
@@ -65,6 +67,7 @@
   }
   function run(buf) {
     document.getElementById("apk").hidden = true;
+    document.getElementById("notice").hidden = true;
     window.wawaApk = buf;
     main();
   }
@@ -77,12 +80,17 @@
     await document.fonts.load("16px GalmuriMono11").catch(() => {});
     const buf = await stored().catch(() => null);
     if (buf) run(buf);
-    else ask("가지고 있는 wild.apk를 고르면 시작합니다. 파일은 이 브라우저에만 보관되고 어디에도 올라가지 않습니다.");
+    else ask("가지고 있는 wild.apk를 고르면 시작합니다.");
   }
 </script>
 </head>
 <body onload="boot()">
 <div id="bar"><span id="status">불러오는 중…</span><input id="apk" type="file" accept=".apk" hidden><a href="https://github.com/Camof1ow/wawa-java">소스</a></div>
+<div id="notice" hidden>
+  <b>이 사이트는 게임 파일을 제공하지 않습니다. 와일드 프론티어 Android판 <code>wild.apk</code>는 직접 구하셔야 합니다.</b><br>
+  이 사이트에는 원작의 APK, 그래픽, 사운드, 코드가 들어 있지 않습니다. 고른 파일은 이 브라우저에만 보관되고
+  어디에도 올라가지 않습니다. 게임 자산의 저작권은 원작자(KTH)에게 있습니다.
+</div>
 <canvas id="screen" width="416" height="312"></canvas>
 <input id="ime" type="text" autocomplete="off" aria-label="키보드 입력">
 </body>
