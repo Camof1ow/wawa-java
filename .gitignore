@@ -11,3 +11,4 @@ extract/
 build/
 web/wawa.js
 web/GalmuriMono11.ttf
+wawa-slot*.properties
