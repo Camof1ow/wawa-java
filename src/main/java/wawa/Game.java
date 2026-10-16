@@ -25,22 +25,17 @@ import javax.swing.JFrame;
 import javax.swing.WindowConstants;
 
 /**
- * Vertical slice of wild.apk: the ARM world map (assets/img/map.png, GSAC raw image)
+ * Vertical slice of wild.apk: the area maps (assets/eng/map, drawn with the real tiles)
  * with grid movement, monsters, turn-based combat and a local save file.
  * Combat mirrors libwawa.so: charge() grants the item then writes the slot.
  */
 public final class Game extends JFrame {
 
 	private static final int SCALE = 2;
-	private static final int MAP_W = 400;
-	private static final int MAP_H = 320;
 	private static final int CELL = 20;
-	private static final int COLS = MAP_W / CELL;
-	private static final int ROWS = MAP_H / CELL;
 	private static final int MAP_X = 8;
 	private static final int MAP_Y = 26;
 
-	private final BufferedImage worldMap;
 	private final ElfImage so;
 	private final SlotScreen slotScreen;
 	/** True while the slot screen is up; the world neither ticks nor draws until a slot opens. */
@@ -121,13 +116,11 @@ public final class Game extends JFrame {
 	 * flag, and that is the first weapon the hero actually equips.
 	 */
 	private static final int STARTING_WEAPON = 297;
-	private String log = "월드맵 진입. 방향키/클릭으로 이동.";
+	private String log = "";
 
 	public Game() throws IOException {
 		super("Wawa - wild.apk Java port");
 		Path assets = assetsDir();
-		Gsac mapGsac = Gsac.load(assets.resolve("img/map.png"));
-		worldMap = mapGsac.rawImage(MAP_W);
 		Gsac face = Gsac.load(assets.resolve("img/face00.png"));
 		heroPortrait = face.frame(0);
 		so = ElfImage.read(MonsterSprite.nativeLib(assets));
@@ -669,7 +662,6 @@ public final class Game extends JFrame {
 		g.fillRect(0, 0, getWidth(), getHeight());
 
 		drawTiles(g);
-		drawMinimap(g);
 
 		g.drawImage(heroPortrait, 2, 2, 22, 22, null);
 		g.setFont(new Font("SansSerif", Font.PLAIN, 12));
@@ -1333,25 +1325,6 @@ public final class Game extends JFrame {
 		}
 		int v = (cell & 0x3f) * 4;
 		return new Color(46 + v / 2, 40 + v / 3, 30 + v / 4);
-	}
-
-	/** The ARMOKAR world map stays on screen as a locator, with the hero and monsters marked. */
-	private void drawMinimap(Graphics2D g) {
-		int w = 120;
-		int h = w * MAP_H / MAP_W;
-		int x = getWidth() - w - 6;
-		int y = MAP_Y;
-		g.setColor(new Color(0, 0, 0, 170));
-		g.fillRect(x - 2, y - 2, w + 4, h + 4);
-		g.drawImage(worldMap, x, y, w, h, null);
-		g.setColor(new Color(0, 0, 0, 120));
-		for (Monster m : monsters) {
-			g.fillRect(x + m.x * w / map.width - 1, y + m.y * h / map.height - 1, 2, 2);
-		}
-		g.setColor(Color.RED);
-		g.fillRect(x + heroX * w / map.width - 2, y + heroY * h / map.height - 2, 4, 4);
-		g.setColor(Color.WHITE);
-		g.drawRect(x, y, w, h);
 	}
 
 	private void bar(Graphics2D g, int x, int y, float ratio, Color color) {
