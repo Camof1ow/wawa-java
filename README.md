@@ -23,6 +23,10 @@ logic is re-derived from the native code, and every format is decoded from the s
   `lnk_hero`, palette rows from `pal/<n>.png`) on the slot screen, the new-game preview (each
   class's outfit) and the field.
 - **World map, grid movement, turn-based combat, save/load**: playable Swing slice.
+- **Terrain**: each map's collision grid is built as LoadGameBlock builds it, from the tile sets'
+  `g_anTileBlock` tables in `libwawa.so` (`BlockGrid`). Deep water, cliffs, cave walls and lava
+  stop the hero; shallow water and bridges do not. Walking into a blocking tile steps aside to
+  the side that opens within two cells, still facing the same way, as NewCollPath does.
 - **Event scripts**: `eve/*.evk` phases run as the original interprets them (`EventRunner`): a new
   game plays t01's opening with its captions, dialogue (portraits, names, typing; Enter advances,
   F toggles fast mode), NPC units, hero moves, camera, fades and emote bubbles. NPC events start
@@ -103,7 +107,7 @@ npx http-server web    # or any static server; the page asks for your wild.apk o
 | --- | --- |
 | `src/main/java/wawa/Game.java` | the playable slice |
 | `src/main/java/wawa/{TitleScreen,SlotScreen}.java` | logo/title opening, slot select scene and new-game panel |
-| `src/main/java/wawa/{MapData,TileAtlas,Tiles}.java` | ground pipeline |
+| `src/main/java/wawa/{MapData,TileAtlas,Tiles,BlockGrid}.java` | ground pipeline and its collision grid |
 | `src/main/java/wawa/{MonsterTable,MonsterData,MonsterStats,MonsterSprite,MonsterAnim}.java` | monsters |
 | `src/main/java/wawa/{PartSprites,HeroAnim}.java` | dat part composition shared by monsters and the hero; hero outfit layers |
 | `src/main/java/wawa/{EventScript,EventRunner,TalkBox}.java` | event tables and length rules, the phase interpreter, the dialogue box |

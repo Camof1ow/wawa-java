@@ -14,6 +14,7 @@ Android 게임 와일드 프론티어(`wild.apk`)를 `libwawa.so` 역공학으�
 | 슬롯 화면 | 저장 슬롯 3개, 이어 하기·삭제, 새 게임 패널(이름·직업·능력치, 기본 이름 "크리스노아"), 직업 미리보기(정면, 서기·걷기 무작위 전환) | `SlotScreen` |
 | 맵 | 지역 맵 타일(레이어별 팔레트 변형), 몬스터 배치(실제 이름·능력치·스프라이트), 포탈로 맵 이동 | `MapData`, `Tiles`, `AreaInfo`, `MonsterTable`, `MonsterSprite` |
 | 주인공 | 장비 층을 합성한 스프라이트, 서기·걷기·앉기. 키를 누르는 동안 8px/프레임으로 걷고(걷기 애니메이션), 스크립트 걷기·NPC 걷기도 진행 픽셀만큼 부드럽게 그린다. 맨손으로 시작해 스크립트가 주는 무기를 든다 | `HeroAnim`, `PartSprites`, `GameCore` |
+| 지형 충돌 | 원작의 타일별 충돌 표(`g_anTileBlock`)로 맵마다 충돌 격자를 만든다(`LoadGameBlock`). 깊은 물·절벽·동굴 벽·용암은 막고, 얕은 물과 다리는 지나간다. 걷다가 지형에 막히면 1~2칸 옆이 트인 쪽으로 비켜 서서 계속 걷는다(`NewCollPath`, 얼굴 방향은 그대로). 스크립트 걷기도 지형에 막힌다 | `BlockGrid`, `GameCore` |
 | 이벤트 스크립트 | `eve/*.evk` 해석기: 자막, 대화(얼굴·이름·타자), NPC 유닛, 카메라, 페이드, 흔들기, 선택지 | `EventScript`, `EventRunner`, `TalkBox` |
 | 전투·저장 | 칸 이동, 턴제 전투, 물약, 슬롯 저장·불러오기 | `GameCore`, `Hero`, `Combat` |
 | 입력 | 키보드, 한글 입력기(이름 입력), 마우스 클릭 | `Game`, `WebMain` |
@@ -75,7 +76,7 @@ flowchart LR
 
 | 검증 | 명령 | 기대 결과 |
 |---|---|---|
-| 셀프 테스트 | `java -cp out wawa.Game <wild.apk> --selftest` (먼저 `wawa-slot*.properties` 삭제) | `intro frames=1359 running=false map=t01 hero=11,15 var1=1 …`, `walk frames=22 hero=0,15 dir=2`, `mapmove map=t02 hero=23,14 dir=2 frames=302 …`, `slot=0 name=와와 class=1 map=a01 …`, `out/*.png` 16장(2배 크기) |
+| 셀프 테스트 | `java -cp out wawa.Game <wild.apk> --selftest` (먼저 `wawa-slot*.properties` 삭제) | `intro frames=1359 running=false map=t01 hero=11,15 var1=1 …`, `walk frames=22 hero=0,15 dir=2`, `mapmove map=t02 hero=23,14 dir=2 frames=302 …`, `slot=0 name=와와 class=1 map=a01 …`, `terrain 27,10->27,10 dir=3 15,17->16,18 dir=1`(깊은 바다에 막힘, 바위를 오른쪽으로 비켜 감), `out/*.png` 16장(2배 크기) |
 | 맵 전체 로드 | `java -cp out wawa.CheckMapsRun <assets>` | `failures=0` |
 | 디코더 동등성(전환 때 1회) | 옛 AWT 경로와 새 `Img` 경로의 픽셀 비교 | Gsac 132개(4582프레임), PNG 75개, 포즈 2784개, 이벤트 문장 135개에서 차이 0 |
 | 웹 | 로컬 정적 서버에서 타이틀 → 새 게임 → 한글 이름 → 오프닝 → F5 저장 → 새로고침 → 불러오기 | 모두 통과 |
@@ -101,7 +102,8 @@ flowchart LR
 
 **아직 포팅하지 않은 것**
 - **이벤트:** 퀘스트, 버프, 사운드, 확대, 데미지 숫자, GOrder/GMenu 화면이 없다. 보스·리젠 맵 11곳은 원작에서 `GMenu 0x74`를 거쳐 들어가므로 포트에서는 들어가지 못한다. 그 밖에 `04`, 엔딩 `8b`, 효과·공격 동작, 맵 오브젝트 `c3`/`d3`, SetCamping `75..a5`가 남았다. 만나면 `[미포팅]` 로그를 남기고 건너뛴다.
-- **게임 시스템:** 인벤토리·장비 화면이 없다. 몬스터는 정지 포즈만 있다. 주인공의 공격·스킬·탈것 동작이 없다. 지형 충돌(`CollHeroPath`)이 없어 맵 경계와 몬스터만 막는다.
+- **게임 시스템:** 인벤토리·장비 화면이 없다. 몬스터는 정지 포즈만 있다. 주인공의 공격·스킬·탈것 동작이 없다.
+- **충돌 남은 것:** 맵 오브젝트 발자국(`LoadGameBlock`의 bit 0)은 오브젝트를 아직 그리지 않아서 넣지 않았다. 몬스터는 지형을 보지 않는다(`CollMonsPath`, 마스크 `g_anMonsBlock[type]`). 스크립트 걷기에는 비켜 서기를 넣지 않았다. 대각 걷기는 목적 칸이 지형이면 멈추지만, 원작은 x·y를 1px씩 따로 움직여 벽을 타고 미끄러진다.
 - **이동 근사:** 원작은 주인공을 픽셀 좌표로 두지만 포트는 칸 + 진행 픽셀이다. 그래서 키를 떼거나 방향을 바꿀 때 칸 중심까지 마저 걷고(최대 1프레임·8px), 오른쪽·아래로 갈 때 칸이 바뀌는 시점이 1프레임 늦다.
 - **슬롯 화면:** 배경의 캠프 오브젝트(`SetCamping`, `.mbk` 맵 오브젝트)가 없다.
 

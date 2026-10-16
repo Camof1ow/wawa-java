@@ -42,6 +42,8 @@ final class GameCore {
 	private String mapCode = MAP_CODES[0];
 	private Img heroPortrait;
 	private MapData map;
+	/** LoadGameBlock's collision grid for {@link #map}. */
+	private BlockGrid block;
 	private Tiles tiles;
 	private final List<Monster> monsters = new ArrayList<>();
 	private final Random rng = new Random(20111017L);
@@ -121,6 +123,11 @@ final class GameCore {
 	private boolean heroActRun;
 	/** Px moved into the next cell (CollHeroPath: 8 a frame straight, 6 diagonal). */
 	private int heroPx;
+	/**
+	 * The way the current step moves when that is not the facing: NewCollPath's sidestep walks the
+	 * hero sideways around terrain without turning it. -1 means it moves the way it faces.
+	 */
+	private int heroMoveDir = -1;
 	/** KeyPressGamePlay's +0x47: the direction held (0 up, 1 down, 2 left, 3 right), -1 none. */
 	private int heldDir = -1;
 	/** A clicked cell the hero walks to while nothing is held (this port's touch pad), -1 none. */
@@ -314,6 +321,7 @@ final class GameCore {
 		mapCode = code;
 		String letter = code.substring(0, 1);
 		map = MapData.load(assets, "assets/eng/map/" + letter + ".png", code);
+		block = new BlockGrid(map, so);
 		try {
 			area = AreaInfo.load(assets, "assets/eng/mob/" + letter + ".png", code);
 		} catch (IOException e) {
@@ -343,6 +351,7 @@ final class GameCore {
 		changeHeroAct(HeroAnim.ACT_STAND);
 		heroActRun = false;
 		heroPx = 0;
+		heroMoveDir = -1;
 		runWalking = false;
 		clickX = -1;
 		emotes.clear();
@@ -429,27 +438,85 @@ final class GameCore {
 				}
 				int nx = heroX + DIR_STEP[dir][0];
 				int ny = heroY + DIR_STEP[dir][1];
-				if (map.inBounds(nx, ny) && monsterAt(nx, ny) == null) {
+				heroMoveDir = -1;
+				if (map.inBounds(nx, ny) && !block.terrain(nx, ny) && monsterAt(nx, ny) == null) {
 					heroPx = HERO_SPEED;
 				} else {
-					clickX = -1;
-					// Blocked: the hero walks in place, and MoveHeroPath still checks the cell it
-					// stands on with the new facing, which is how a portal on the map edge is taken.
-					takeExit();
+					// CollHeroPath hands a terrain cell (not a monster or the map edge) to NewCollPath.
+					int side = map.inBounds(nx, ny) && block.terrain(nx, ny) ? sidestep(dir) : -1;
+					if (side >= 0) {
+						heroMoveDir = side;
+						heroPx = HERO_SPEED;
+					} else {
+						clickX = -1;
+						// Blocked: the hero walks in place, and MoveHeroPath still checks the cell it
+						// stands on with the new facing, which is how a portal on the map edge is taken.
+						takeExit();
+					}
 				}
 			}
 		} else {
 			heroPx += HERO_SPEED;
 			if (heroPx >= TILE) {
+				int moved = moveDir();
 				heroPx = 0;
-				heroX += DIR_STEP[heroDir][0];
-				heroY += DIR_STEP[heroDir][1];
+				heroMoveDir = -1;
+				heroX += DIR_STEP[moved][0];
+				heroY += DIR_STEP[moved][1];
 				if (heroX == clickX && heroY == clickY) {
 					clickX = -1;
 				}
 				takeExit();
 			}
 		}
+	}
+
+	/** The direction the hero's current step moves in. */
+	private int moveDir() {
+		return heroMoveDir >= 0 ? heroMoveDir : heroDir;
+	}
+
+	/** For each way of walking, the two ways NewCollPath can step aside, the one it takes on a tie first. */
+	private static final int[][] ASIDE = { { 2, 3 }, { 3, 2 }, { 0, 1 }, { 1, 0 } };
+
+	/**
+	 * NewCollPath for a hero standing on a cell centre: walking into terrain, it steps aside toward
+	 * the nearer side whose cells are free both beside the hero and beside the blocking cell, one
+	 * cell (16 px) or two (32 px) away. On a tie walking up goes left, down right, left up and right
+	 * down. Two cells away the hero steps one cell now and the next step finds the gap one away.
+	 * Returns that side, or -1 when neither opens within two cells.
+	 */
+	private int sidestep(int dir) {
+		int best = -1;
+		int bestCells = 3;
+		for (int side : ASIDE[dir]) {
+			int cells = openAside(dir, side);
+			if (cells < bestCells) {
+				best = side;
+				bestCells = cells;
+			}
+		}
+		return best;
+	}
+
+	/** 1 or 2 when the way past the blocking cell opens that many cells toward {@code side}, else 3. */
+	private int openAside(int dir, int side) {
+		int sx = DIR_STEP[side][0];
+		int sy = DIR_STEP[side][1];
+		int fx = DIR_STEP[dir][0];
+		int fy = DIR_STEP[dir][1];
+		if (!free(heroX + sx, heroY + sy)) {
+			return 3;
+		}
+		if (free(heroX + sx + fx, heroY + sy + fy)) {
+			return 1;
+		}
+		return free(heroX + 2 * sx, heroY + 2 * sy) && free(heroX + 2 * sx + fx, heroY + 2 * sy + fy) ? 2 : 3;
+	}
+
+	/** NewCollPath's mask 0x23: no terrain and nothing standing there (this port's monsters stand for 0x20). */
+	private boolean free(int x, int y) {
+		return map.inBounds(x, y) && !block.terrain(x, y) && monsterAt(x, y) == null;
 	}
 
 	/** The way to the clicked cell, horizontal first; -1 once there or with no click. */
@@ -473,6 +540,7 @@ final class GameCore {
 		if (runWalking) {
 			runWalking = false;
 			heroPx = 0;
+			heroMoveDir = -1;
 			changeHeroAct(HeroAnim.ACT_STAND);
 		}
 	}
@@ -928,11 +996,11 @@ final class GameCore {
 
 	/** The px the hero has walked toward its next cell, which DrawHeroAnim's position includes. */
 	private int heroOffX() {
-		return heroPx == 0 ? 0 : DIR_STEP[heroDir][0] * heroPx;
+		return heroPx == 0 ? 0 : DIR_STEP[moveDir()][0] * heroPx;
 	}
 
 	private int heroOffY() {
-		return heroPx == 0 ? 0 : DIR_STEP[heroDir][1] * heroPx;
+		return heroPx == 0 ? 0 : DIR_STEP[moveDir()][1] * heroPx;
 	}
 
 	/** The px a unit has walked toward its script target. */
@@ -1231,6 +1299,7 @@ final class GameCore {
 		heroGoY = y;
 		heroGoDir = dir;
 		heroPx = 0;
+		heroMoveDir = -1;
 		changeHeroAct(HeroAnim.ACT_WALK);
 	}
 
@@ -1376,8 +1445,9 @@ final class GameCore {
 		if (heroAct == HeroAnim.ACT_WALK) {
 			int nx = heroX + DIR_STEP[heroDir][0];
 			int ny = heroY + DIR_STEP[heroDir][1];
-			// Against the map edge CollHeroPath makes no progress, so nothing accumulates either.
-			if (map.inBounds(nx, ny)) {
+			// Against the map edge or terrain CollHeroPath makes no progress, so nothing accumulates
+			// either. The script walk's NewCollPath sidestep is left out: scripts walk open ground.
+			if (map.inBounds(nx, ny) && !block.terrain(nx, ny)) {
 				heroPx += heroDir >= 4 ? 6 : 8;
 				if (heroPx >= TILE) {
 					heroPx -= TILE;
@@ -1607,6 +1677,7 @@ final class GameCore {
 				changeHeroAct(n);
 				heroActRun = true;
 				heroPx = 0;
+				heroMoveDir = -1;
 				if (act == 0x05) {
 					heroStep = 8;
 				}
@@ -2490,6 +2561,13 @@ final class GameCore {
 				+ " map=" + mapCode + " hero=" + heroX + "," + heroY + " lv=" + hero.level + " exp=" + hero.exp
 				+ " hp=" + hero.hp + "/" + hero.maxHp + " atk=" + hero.power() + " gold=" + gold
 				+ " monsters=" + monsters.size() + " log=" + log);
+		// LoadGameBlock's terrain on t01 (no monsters): holding right at (27,10) the deep sea stops the
+		// hero, with no gap within two cells up or down; holding down at (15,17) the rock at (15,18)
+		// is open on both sides, so NewCollPath steps right (down's tie) still facing down, and 4
+		// frames end at (16,18).
+		loadMap("t01");
+		monsters.clear();
+		System.out.println("terrain " + holdFrom(27, 10, 3, 6) + " " + holdFrom(15, 17, 1, 4));
 		new GameCore(assets, storage).writeFrame(sink, "slots-after.png");
 	}
 
@@ -2510,5 +2588,23 @@ final class GameCore {
 			}
 		}
 		return best;
+	}
+
+	/**
+	 * Selftest: puts the hero on a cell facing {@code dir} and holds that direction through CalcHeroRun
+	 * alone (no events, monsters or random draws) for some frames; reports where the hero ends.
+	 */
+	private String holdFrom(int x, int y, int dir, int frames) {
+		heroX = x;
+		heroY = y;
+		heroDir = dir;
+		heroPx = 0;
+		heroMoveDir = -1;
+		hold(dir);
+		for (int i = 0; i < frames; i++) {
+			calcHeroRun();
+		}
+		heldDir = -1;
+		return x + "," + y + "->" + heroX + "," + heroY + " dir=" + heroDir;
 	}
 }
