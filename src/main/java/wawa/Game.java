@@ -88,8 +88,13 @@ public final class Game extends JFrame {
 		};
 	}
 
-	private final ElfImage so;
-	private final SlotScreen slotScreen;
+	private ElfImage so;
+	private SlotScreen slotScreen;
+	/**
+	 * Set once {@link #loadWorld} has built everything past the opening. The logos and title run
+	 * while it loads (several seconds in the browser), and Play waits for it.
+	 */
+	private volatile boolean ready;
 	/** True while the slot screen is up; the world neither ticks nor draws until a slot opens. */
 	private boolean selecting = true;
 	/** The logo and title screens before the slot screen; null once Play is chosen. */
@@ -98,7 +103,7 @@ public final class Game extends JFrame {
 	/** Time played in this slot; slots store it in DrawPopupSlot's 1/12 s ticks. */
 	private long playMillis;
 	private String mapCode = MAP_CODES[0];
-	private final BufferedImage heroPortrait;
+	private BufferedImage heroPortrait;
 	private MapData map;
 	private Tiles tiles;
 	private Path assetsRoot;
@@ -215,6 +220,12 @@ public final class Game extends JFrame {
 
 	public Game() throws IOException {
 		super("Wawa - wild.apk Java port");
+		opening = new TitleScreen(assetsDir());
+		buildWindow();
+	}
+
+	/** Everything the slot screen and the field need; runs off the event thread while the logos play. */
+	void loadWorld() throws IOException {
 		Path assets = assetsDir();
 		Gsac face = Gsac.load(assets.resolve("img/face00.png"));
 		heroPortrait = face.frame(0);
@@ -231,8 +242,10 @@ public final class Game extends JFrame {
 		events.global = EventScript.global(assets);
 		imoticon = Gsac.loadCompanion(assets.resolve("img/imoticon.png"));
 		slotScreen = new SlotScreen(assets, so, items, readSummaries());
-		opening = new TitleScreen(assets);
+		ready = true;
+	}
 
+	private void buildWindow() {
 		setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE);
 		// The game draws on a fixed BASE_W x BASE_H canvas; the window scales it to whatever size it
 		// has, keeping the aspect, so any screen (and the browser page) shows all of it.
@@ -270,7 +283,7 @@ public final class Game extends JFrame {
 			@Override
 			public void inputMethodTextChanged(java.awt.event.InputMethodEvent e) {
 				java.text.AttributedCharacterIterator text = e.getText();
-				if (selecting && text != null) {
+				if (ready && selecting && text != null) {
 					int n = e.getCommittedCharacterCount();
 					for (char c = text.first(); n-- > 0 && c != java.text.CharacterIterator.DONE; c = text.next()) {
 						slotScreen.typed(c);
@@ -292,7 +305,7 @@ public final class Game extends JFrame {
 
 			@Override
 			public void keyTyped(KeyEvent e) {
-				if (selecting) {
+				if (ready && selecting) {
 					slotScreen.typed(e.getKeyChar());
 					repaint();
 				}
@@ -301,7 +314,7 @@ public final class Game extends JFrame {
 		addMouseListener(new MouseAdapter() {
 			@Override
 			public void mousePressed(MouseEvent e) {
-				if (!selecting && !events.active()) {
+				if (ready && !selecting && !events.active()) {
 					onClick(e);
 				}
 			}
@@ -630,7 +643,8 @@ public final class Game extends JFrame {
 
 	private void onKey(int code) {
 		if (opening != null) {
-			if (opening.key(code)) {
+			// Play leads to the slot screen only once loadWorld has built it.
+			if (opening.key(code) && ready) {
 				opening = null;
 			}
 			repaint();
@@ -2291,7 +2305,9 @@ public final class Game extends JFrame {
 			// On the event thread, so the 62 ms game timer cannot tick while the script runs.
 			javax.swing.SwingUtilities.invokeAndWait(() -> {
 				try {
-					new Game().selfTest(new java.io.File("out/selftest.png"));
+					Game g = new Game();
+					g.loadWorld();
+					g.selfTest(new java.io.File("out/selftest.png"));
 				} catch (IOException e) {
 					throw new java.io.UncheckedIOException(e);
 				}
@@ -2301,6 +2317,13 @@ public final class Game extends JFrame {
 		Game g = new Game();
 		g.setLocationRelativeTo(null);
 		g.setVisible(true);
+		new Thread(() -> {
+			try {
+				g.loadWorld();
+			} catch (IOException e) {
+				throw new java.io.UncheckedIOException(e);
+			}
+		}, "loadWorld").start();
 	}
 
 	/**
