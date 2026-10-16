@@ -3,8 +3,7 @@ package wawa;
 import java.util.Random;
 
 /**
- * Item base data the engine keeps in libwawa.so, and the instance AddItem makes from it
- * (docs/FORMATS.md §7).
+ * Item base data the engine keeps in libwawa.so, and the instance AddItem makes from it.
  *
  * <pre>
  * g_anItem   0xc89a8   u32 per id: &amp; 0x1f type (1..3 weapons, 4..12 gear, 13+ consumables),

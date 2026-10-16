@@ -1,12 +1,9 @@
-# Wild Frontier (와와 for Kakao) — Java port and format notes
+# Wild Frontier (와와 for Kakao) — Java port
 
 A ground-up Java re-implementation of the Android game **Wild Frontier** (`wild.apk`,
 `com.appstree.wawa`), built by reverse engineering its assets and its ARM library
 `lib/armeabi/libwawa.so`. Nothing here is copied from a decompiler's Java output; the game
 logic is re-derived from the native code, and every format is decoded from the shipped files.
-
-Screenshots and measurements in these notes come from running the original in an Android-x86
-4.4 VM and comparing it with this port, so claims are checkable rather than guessed.
 
 ## What works
 
@@ -39,7 +36,7 @@ Screenshots and measurements in these notes come from running the original in an
   cannot be reached yet; there is no inventory, armour or equip screen.
 - **Event script gaps.** Quests, buffs, sound, zoom, the GOrder/GMenu screens, map exit, area
   and object triggers, and effect/attack actions are not ported; a script that reaches one logs
-  `[미포팅]` and carries on as `docs/FORMATS.md` §10 lists.
+  `[미포팅]` and carries on.
 - **Animation playback.** Poses for any state and step are composed (`MonsterAnim.pose`,
   `HeroAnim.pose`); monsters only draw state 0, step 0, and the hero only its stand, walk and sit
   actions (attacks, skills and riding are not ported).
@@ -100,23 +97,6 @@ cp build/generated/teavm/js/wawa.js src/main/resources/wawa/GalmuriMono11.ttf we
 npx http-server web    # or any static server; the page asks for your wild.apk on first load
 ```
 
-## Decompiling the library locally
-
-The decompiled C of `libwawa.so` is not committed. `tools/ghidra` regenerates it from your copy with
-Ghidra 12 headless: `jumptables.py` computes the Thumb PIC switch tables and the in-function far
-`bl` branches Ghidra misses, `ApplyJumpTables.java` applies them as JumpTable overrides and branch
-flow overrides, and `DumpBySystem.java` writes one C file per feature. With those applied, every
-named function decompiles and none is left cut at a jump table.
-
-```bash
-analyzeHeadless <project-dir> wawa -import libwawa.so -scriptPath tools/ghidra \
-  -postScript DumpBySystem.java decomp            # first pass, to find the cut switches
-python tools/ghidra/jumptables.py libwawa.so decomp jumptables.txt   # repeat with the next dump until "0 new"
-analyzeHeadless <new-project-dir> wawa -import libwawa.so -scriptPath tools/ghidra \
-  -postScript ApplyJumpTables.java jumptables.txt jumptables.txt.far check.c \
-  -postScript DumpBySystem.java decomp
-```
-
 ## Layout
 
 | path | contents |
@@ -131,13 +111,3 @@ analyzeHeadless <new-project-dir> wawa -import libwawa.so -scriptPath tools/ghid
 | `src/main/java/wawa/{Gsac,RenderAtlas,ElfImage,ResourceFile}.java` | asset decoding |
 | `src/main/java/wawa/{CheckMaps,CheckMapsRun,ExtractAll,MatchSprite,FindBySize}.java` | tools |
 | `web/index.html`, `web/src/wawa/WebMain.java`, `build.gradle.kts`, `.github/workflows/pages.yml` | browser page, its TeaVM entry point, the TeaVM build and the Pages workflow |
-| `docs/FORMATS.md` | every asset format, with the function that proves it |
-| `docs/ORIGINAL-VM.md` | how to run the original locally, including the Dalvik patch it needs |
-| `PORT-BREAKDOWN.md` | what the APK is made of and the porting order |
-
-## Notes on the original
-
-The game is 32-bit ARM only, so it needs a translating runtime to run on x86.
-It also aborts after about 17 seconds on Android 4.4 (Dalvik) because it leaks a JNI pinned
-array reference every frame and the pin table caps at 1024; `docs/ORIGINAL-VM.md` records the
-one-constant patch that lifts the cap.

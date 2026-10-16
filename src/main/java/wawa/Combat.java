@@ -3,8 +3,7 @@ package wawa;
 import java.util.Random;
 
 /**
- * The two physical hit resolutions of libwawa.so, without skills, elements or status effects
- * (docs/FORMATS.md §7).
+ * The two physical hit resolutions of libwawa.so, without skills, elements or status effects.
  *
  * <pre>
  * AttackHeroHitMons (hero -&gt; monster)

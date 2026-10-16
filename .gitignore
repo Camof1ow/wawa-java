@@ -2,8 +2,8 @@ out/
 *.class
 wawa-save.properties
 
-# Nothing of the original is redistributed: not the APK, its assets or its library, and not code
-# decompiled from it. The tools take your own copy; tools/ghidra regenerates the decompilation locally.
+# This repository is the public player only. Nothing of the original is redistributed: not the APK,
+# its assets or its library, and not code decompiled from it; research stays out of it too.
 *.apk
 assets/
 extract/

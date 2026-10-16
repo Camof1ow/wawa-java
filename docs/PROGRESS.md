@@ -1,11 +1,10 @@
 # 작업 정리 (2026-10-16 기준)
 
 Android 게임 와일드 프론티어(`wild.apk`)를 `libwawa.so` 역공학으로 Java에 다시 구현한 작업의 현재 상태다.
-포맷과 원작 함수 해석은 [`FORMATS.md`](FORMATS.md)에, 원작 실행 환경은 [`ORIGINAL-VM.md`](ORIGINAL-VM.md)에 있다.
 
 - **브라우저:** https://camof1ow.github.io/wawa-java/ — 처음 한 번 자기 `wild.apk`를 고르면 브라우저(IndexedDB)에 보관해 다음부터 바로 시작한다. 파일은 어디에도 올라가지 않는다. (방향키 이동, Enter 확인·대화, F 빨리 넘기기, F5 저장, F9 불러오기)
 - **데스크톱:** `java -cp out wawa.Game <자기 wild.apk>` (빌드는 README "Build and run")
-- **배포 원칙:** 저장소와 사이트에는 원작의 어떤 부분도 없다(APK, 자산, 라이브러리, 디컴파일 코드). 디컴파일은 README "Decompiling the library locally"의 도구로 각자 로컬에서 만든다.
+- **배포 원칙:** 이 저장소는 공개 구동기만 담는다. 저장소와 사이트에는 원작의 어떤 부분도 없다(APK, 자산, 라이브러리, 디컴파일 코드). 디컴파일과 연구 자료는 공개하지 않는다.
 
 ## 1. 지금 되는 것
 

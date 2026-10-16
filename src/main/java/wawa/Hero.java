@@ -4,7 +4,7 @@ import java.util.Random;
 
 /**
  * The hero record as InitHero, InitHeroState and InitHeroLevelUp build it in libwawa.so, without
- * skills, buffs or pets (docs/FORMATS.md §7).
+ * skills, buffs or pets.
  *
  * <pre>
  * class start stats  g_anHeroDefault 0xb9878   +0xd0 = T[c], +0xcc = T[c+3], +0xc8 = T[c+6], +0xd4 = T[c+9]
