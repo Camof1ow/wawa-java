@@ -28,6 +28,9 @@ public final class Gsac {
 	private final int[] frameHeight;
 	private byte[] palette;
 	private byte[] cached;
+	/** Rows and row length of an external palette; a single row otherwise. */
+	private int paletteRowCount = 1;
+	private int paletteRowLength;
 	/** Image size for a frame-count-0 archive, from the header at 0x04. */
 	private int rawW;
 	private int rawH;
@@ -149,8 +152,18 @@ public final class Gsac {
 		return mode() != MODE_1BPP;
 	}
 
-	/** Decodes one frame to ARGB; magenta decodes as transparent. */
+	/** Decodes one frame to ARGB with the first palette row; magenta decodes as transparent. */
 	public BufferedImage frame(int index) {
+		return frame(index, 0);
+	}
+
+	/**
+	 * Decodes one frame with palette row {@code row}. External palettes (pal/&lt;name&gt;.png) hold
+	 * several rows of the same length, the trailer's two bytes being row count and row length, as
+	 * LoadSpritePal reads them; DrawSpriteFull's palette argument picks the row. A row past the end
+	 * falls back to the first.
+	 */
+	public BufferedImage frame(int index, int row) {
 		if (!fullyDecodable()) {
 			throw new IllegalStateException(source + " mode " + mode() + " not supported yet");
 		}
@@ -168,11 +181,12 @@ public final class Gsac {
 		} else {
 			pixels = decodeRle(data, index);
 		}
+		int base = row > 0 && row < paletteRowCount ? row * paletteRowLength : 0;
 		BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
 		for (int y = 0; y < h; y++) {
 			for (int x = 0; x < w; x++) {
 				int idx = pixels[y * w + x] & 0xFF;
-				img.setRGB(x, y, idx == KEY_INDEX ? 0 : argb(idx));
+				img.setRGB(x, y, idx == KEY_INDEX ? 0 : argb(base + idx));
 			}
 		}
 		return img;
@@ -198,7 +212,12 @@ public final class Gsac {
 	public static Gsac load(Path file, Path paletteFile) throws IOException {
 		Gsac g = load(file);
 		if (g.palette.length == 0 && paletteFile != null && Files.exists(paletteFile)) {
-			g.palette = externalPalette(Files.readAllBytes(paletteFile));
+			byte[] raw = Files.readAllBytes(paletteFile);
+			g.palette = externalPalette(raw);
+			if (raw.length >= 2) {
+				g.paletteRowCount = raw[raw.length - 2] & 0xFF;
+				g.paletteRowLength = raw[raw.length - 1] & 0xFF;
+			}
 		}
 		return g;
 	}

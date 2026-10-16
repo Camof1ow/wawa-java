@@ -41,6 +41,14 @@ final class ElfImage {
 		return at < 0 || at + 2 > bytes.length ? 0 : (bytes[at] & 0xFF) | ((bytes[at + 1] & 0xFF) << 8);
 	}
 
+	int s8(int vaddr) {
+		return (byte) u8(vaddr);
+	}
+
+	int s16(int vaddr) {
+		return (short) u16(vaddr);
+	}
+
 	int u32(int vaddr) {
 		int at = fileOffset(vaddr);
 		if (at < 0 || at + 4 > bytes.length) {

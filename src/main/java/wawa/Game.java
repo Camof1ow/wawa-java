@@ -40,6 +40,16 @@ public final class Game extends JFrame {
 	private static final int MAP_Y = 26;
 
 	private final BufferedImage worldMap;
+	private final ElfImage so;
+	private final SlotScreen slotScreen;
+	/** True while the slot screen is up; the world neither ticks nor draws until a slot opens. */
+	private boolean selecting = true;
+	/** The logo and title screens before the slot screen; null once Play is chosen. */
+	private TitleScreen opening;
+	private int slotIndex;
+	/** Time played in this slot; slots store it in DrawPopupSlot's 1/12 s ticks. */
+	private long playMillis;
+	private String mapCode = MAP_CODES[0];
 	private final BufferedImage heroPortrait;
 	private MapData map;
 	private Tiles tiles;
@@ -61,23 +71,29 @@ public final class Game extends JFrame {
 	private MonsterStats monsterStats;
 	private int heroX = 10;
 	private int heroY = 12;
-	private int heroMaxHp = 42;
-	private int heroHp = 42;
-	/** Hero level; max HP and XP requirement come from the original level curves. */
-	private int heroLevel = 1;
-	private int heroExp;
-	/** Combat fields the native build keeps in the hero record: scale, base attack, evasion. */
-	private int heroAtkScale = 1000;
-	private int heroBaseAttack = 40;
-	private int heroEvade = 200;
+	/** The hero record InitHero / InitHeroState build; derived values are recomputed every tick. */
+	private Hero hero;
 	/** Phase state mirrored from InitPhase/CalcGamePlay: 8-slot queue, pause flag, cooldown. */
 	private final PhaseQueue phases = new PhaseQueue();
 	private boolean phasePaused;
 	private int pendingSteps;
 	private int menuCooldown;
-	private int heroAtk = 14;
+	private Item items;
+	private HeroAnim heroAnim;
+	/**
+	 * The hero record's direction byte (+5) as this port reads ani_hero: 0 up, 1 down, 2 right,
+	 * 3 left (drawn as 2 mirrored). Which screen side 2 faces is inferred from the frames.
+	 */
+	private int heroDir = 1;
 	private int gold = 300;
 	private int potions = 3;
+	/**
+	 * The weapon a new hero fights with. A new game loads map t01 (KeyPressGOrderNewGame); its event
+	 * script grants sword 168 with the equip flag, but GetGOrderEquipLevel refuses it below level 6.
+	 * The t02 script ("You can use my sword") then grants item 297 (level 1, value 5) with the same
+	 * flag, and that is the first weapon the hero actually equips.
+	 */
+	private static final int STARTING_WEAPON = 297;
 	private String log = "월드맵 진입. 방향키/클릭으로 이동.";
 
 	public Game() throws IOException {
@@ -87,12 +103,16 @@ public final class Game extends JFrame {
 		worldMap = mapGsac.rawImage(MAP_W);
 		Gsac face = Gsac.load(assets.resolve("img/face00.png"));
 		heroPortrait = face.frame(0);
+		so = ElfImage.read(MonsterSprite.nativeLib(assets));
+		items = new Item(so);
+		newHero(0, "");
 
-		// Map code a01 = assets/eng/map/a.png, language 01, decoded by ReadMapFile/LoadGameMap.
+		// The world behind the slot screen is not drawn until a slot is opened, but the rest of
+		// the port expects a loaded map, so a01 stands loaded underneath.
 		loadMap(MAP_CODES[0]);
-
-		setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE);
-
+		heroAnim = new HeroAnim(assets, so);
+		slotScreen = new SlotScreen(assets, so, items, readSummaries());
+		opening = new TitleScreen(assets);
 
 		setDefaultCloseOperation(WindowConstants.EXIT_ON_CLOSE);
 		setResizable(false);
@@ -109,26 +129,103 @@ public final class Game extends JFrame {
 			public void keyPressed(KeyEvent e) {
 				onKey(e.getKeyCode());
 			}
+
+			@Override
+			public void keyTyped(KeyEvent e) {
+				if (selecting) {
+					slotScreen.typed(e.getKeyChar());
+					repaint();
+				}
+			}
 		});
 		addMouseListener(new MouseAdapter() {
 			@Override
 			public void mousePressed(MouseEvent e) {
-				onClick(e);
+				if (!selecting) {
+					onClick(e);
+				}
 			}
 		});
 
 		// CalcGamePlay runs on the native 62 ms timer with this order:
 		// InitHeroState -> CalcHeroAct -> CalcMons -> CalcHeroRun -> Post*Value -> phase pop.
 		javax.swing.Timer loop = new javax.swing.Timer(62, e -> {
-			gameTick();
+			if (!selecting) {
+				playMillis += 62;
+				gameTick();
+			}
 			repaint();
 		});
 		loop.start();
 	}
 
+	/** InitHero for a class, holding the weapon a new game first equips. */
+	private void newHero(int heroClass, String name) {
+		hero = new Hero(so, heroClass);
+		hero.name = name;
+		hero.weapon = items.create(STARTING_WEAPON, 0, rng);
+		hero.recompute(rng);
+		hero.hp = hero.maxHp;
+	}
+
+	/** Applies what the slot screen asked for; false when the window should close. */
+	private boolean onSlotAction(SlotScreen.Action action) {
+		if (action instanceof SlotScreen.Action.Continue c) {
+			slotIndex = c.slot();
+			load();
+			selecting = false;
+		} else if (action instanceof SlotScreen.Action.NewGame n) {
+			// KeyPressGOrderNewGame: InitHero(class), LoadGameMap("t01"), SaveSlot(slot).
+			slotIndex = n.slot();
+			newHero(n.heroClass(), n.name());
+			try {
+				loadMap("t01");
+			} catch (IOException e) {
+				log = "맵 로드 실패: " + e;
+			}
+			playMillis = 0;
+			save();
+			selecting = false;
+		} else if (action instanceof SlotScreen.Action.Delete d) {
+			try {
+				Files.deleteIfExists(saveFile(d.slot()));
+			} catch (IOException e) {
+				log = "삭제 실패: " + e;
+			}
+			slotScreen.slotDeleted(d.slot());
+		} else if (action instanceof SlotScreen.Action.Quit) {
+			dispose();
+			return false;
+		}
+		return true;
+	}
+
+	private SlotScreen.Summary[] readSummaries() {
+		SlotScreen.Summary[] out = new SlotScreen.Summary[SlotScreen.SLOTS];
+		for (int i = 0; i < out.length; i++) {
+			Path f = saveFile(i);
+			if (!Files.exists(f)) {
+				continue;
+			}
+			try (InputStream is = Files.newInputStream(f)) {
+				Properties p = new Properties();
+				p.load(is);
+				out[i] = new SlotScreen.Summary(p.getProperty("name", ""),
+						Integer.parseInt(p.getProperty("class", "0")), Integer.parseInt(p.getProperty("level", "1")),
+						Integer.parseInt(p.getProperty("mode", "0")), Integer.parseInt(p.getProperty("playTime", "0")),
+						// The slot hero wears what this port's hero always holds: the starting weapon.
+						HeroAnim.wearing(items, items.create(STARTING_WEAPON, 0, rng), 1, HeroAnim.ACT_STAND));
+			} catch (IOException | NumberFormatException e) {
+				out[i] = null;
+			}
+		}
+		return out;
+	}
+
 	/** Loads one of the shipped maps by its 3-character code, as LoadGameMap does. */
 	private void loadMap(String code) throws IOException {
 		assetsRoot = assetsDir();
+		mapCode = code;
 		String letter = code.substring(0, 1);
 		map = MapData.load(assetsRoot.resolve("eng/map/" + letter + ".png"), code);
 		try {
@@ -183,12 +280,7 @@ public final class Game extends JFrame {
 
 	/** InitHeroState: the original recomputes the hero's derived stats every tick. */
 	private void initHeroState() {
-		heroMaxHp = 40 + HeroCurves.pow112(heroLevel) / 8;
-		heroBaseAttack = 8 + HeroCurves.pow112(heroLevel) / 16;
-		heroEvade = 120 + heroLevel * 10;
-		if (heroHp > heroMaxHp) {
-			heroHp = heroMaxHp;
-		}
+		hero.recompute(rng);
 	}
 
 	/** CalcHeroAct: resolve a queued step that reaches the hero. */
@@ -224,26 +316,32 @@ public final class Game extends JFrame {
 	}
 
 	/**
-	 * LoadMonsToMap: one monster per record of the area's .mbk. Position, facing, name and
-	 * sprite always come from the shipped data; HP, attack and critical chance come from the
-	 * stat tables too wherever the id has a row, and fall back to this port's tiers otherwise.
+	 * LoadMonsToMap: one monster per record of the area's .mbk. Position, facing, name and sprite
+	 * come from the shipped data, and InitMonsAbility's stats at level = area base level + the
+	 * record's level nibble wherever the id has a stat row; ids past the tables fall back to this
+	 * port's tiers.
 	 */
 	private void spawnMonsters() {
 		int[] hpTier = { 30, 45, 60, 80, 140 };
 		int[] atkTier = { 6, 9, 12, 15, 24 };
 		for (MonsterTable.Record r : monsterTable.records) {
-			boolean known = monsterStats != null && monsterStats.has(r.monsterId);
+			int level = area.baseLevel + r.level;
+			MonsterStats.Ability ab = monsterStats == null ? null : monsterStats.ability(r.monsterId, level);
 			int tier = Math.min(hpTier.length - 1, (r.monsterId % 210) / 42);
-			int hp = known ? monsterStats.hp(r.monsterId) : hpTier[tier];
-			int atk = known ? monsterStats.attack(r.monsterId) : atkTier[tier];
 			boolean aggressive = tier >= 2;
 			String name = monsterSprites == null ? null : monsterSprites.name(r.monsterId);
 			Monster m = new Monster(r.cellX, r.cellY, name != null ? name : "몬스터#" + r.monsterId,
-					hp, atk, r.monsterId, aggressive, Math.max(0, r.cellX - 2),
-					Math.max(0, r.cellY - 2), r.cellX + 2, r.cellY + 2);
+					ab != null ? ab.hp() : hpTier[tier], ab != null ? ab.attack() : atkTier[tier],
+					r.monsterId, aggressive, Math.max(0, r.cellX - 2), Math.max(0, r.cellY - 2),
+					r.cellX + 2, r.cellY + 2);
 			m.facing = r.direction;
-			m.critResist = known ? monsterStats.critical(r.monsterId) : tier * 60;
-			m.guarded = tier >= 3;
+			m.level = level;
+			if (ab != null) {
+				m.defence = ab.defence();
+				m.accuracy = ab.accuracy();
+				m.dodge = ab.dodge();
+				m.crit = ab.crit();
+			}
 			monsters.add(m);
 		}
 	}
@@ -311,12 +409,16 @@ public final class Game extends JFrame {
 			return;
 		}
 		m.atkOnce = true;
-		Combat.Result r = Combat.strike(1000, 0, m.atk, 0, 0, heroEvade, false, true,
-				rng.nextInt(1000), rng.nextInt(1000));
-		heroHp -= r.damage();
+		Combat.Result r = Combat.monsterHits(m.atk, Combat.swingScale(rng), m.accuracy, m.crit,
+				hero.armor, hero.dodge, rng);
+		hero.hp -= r.damage();
 		log = m.kind + "에게 " + r.damage() + " 피해를 입었다." + (r.missed() ? " 빗나감." : "");
-		if (heroHp <= 0) {
-			heroHp = heroMaxHp;
+		knockedOutCheck();
+	}
+
+	private void knockedOutCheck() {
+		if (hero.hp <= 0) {
+			hero.hp = hero.maxHp;
 			gold = Math.max(0, gold - 50);
 			heroX = 10;
 			heroY = 12;
@@ -325,6 +427,20 @@ public final class Game extends JFrame {
 	}
 
 	private void onKey(int code) {
+		if (opening != null) {
+			if (opening.key(code)) {
+				opening = null;
+			}
+			repaint();
+			return;
+		}
+		if (selecting) {
+			SlotScreen.Action action = slotScreen.key(code);
+			if (action == null || onSlotAction(action)) {
+				repaint();
+			}
+			return;
+		}
 		switch (code) {
 			case KeyEvent.VK_LEFT, KeyEvent.VK_A -> step(-1, 0);
 			case KeyEvent.VK_RIGHT, KeyEvent.VK_D -> step(1, 0);
@@ -395,6 +511,7 @@ public final class Game extends JFrame {
 			log = ".mon스터가 길을 막고 있다.";
 			return;
 		}
+		heroDir = dy < 0 ? 0 : dy > 0 ? 1 : dx > 0 ? 2 : 3;
 		heroX = nx;
 		heroY = ny;
 	}
@@ -439,8 +556,7 @@ public final class Game extends JFrame {
 	}
 
 	private void attack(Monster m) {
-		Combat.Result r = Combat.strike(heroAtkScale, 0, heroBaseAttack, 0, m.critResist, heroEvade,
-				false, m.guarded, rng.nextInt(1000), rng.nextInt(1000));
+		Combat.Result r = Combat.heroHits(hero.power(), hero.accuracy, hero.crit, m.defence, m.dodge, rng);
 		int dealt = r.damage();
 		m.hp -= dealt;
 		log = m.kind + "에게 " + dealt + " 피해." + (r.crit() ? " 크리티!" : "") + (r.missed() ? " 빗나감." : "");
@@ -448,39 +564,17 @@ public final class Game extends JFrame {
 			monsters.remove(m);
 			int reward = 20 + rng.nextInt(40);
 			gold += reward;
-			gainExp(reward);
+			int levels = hero.gainExp(hero.expFor(m.level, false), rng);
 			if (rng.nextInt(3) == 0) {
 				potions++;
 			}
-			log += " 처치. 골드 +" + reward;
+			log += " 처치. 골드 +" + reward + (levels > 0 ? " 레벨 " + hero.level + " 달성!" : "");
 		} else {
-			Combat.Result back = Combat.strike(1000, 0, m.atk, 0, 0, 0, false, true,
-					rng.nextInt(1000), 1000);
-			heroHp -= back.damage();
+			Combat.Result back = Combat.monsterHits(m.atk, Combat.swingScale(rng), m.accuracy, m.crit,
+					hero.armor, hero.dodge, rng);
+			hero.hp -= back.damage();
 			log += " 반격 " + back.damage() + (back.missed() ? " (회피)" : "") + ".";
-			if (heroHp <= 0) {
-				heroHp = heroMaxHp;
-				gold = Math.max(0, gold - 50);
-				heroX = 10;
-				heroY = 12;
-				log = "쓰러졌다. 골드 50을 잃고 마을로 복귀.";
-			}
-		}
-	}
-
-	/**
-	 * Awards XP against the original requirement curve and recomputes max HP / ATK from
-	 * CalcHeroPow112 exactly as the native build does, so levels grow on the same numbers.
-	 */
-	private void gainExp(int amount) {
-		heroExp += amount;
-		while (heroExp >= HeroCurves.pow088(heroLevel)) {
-			heroExp -= HeroCurves.pow088(heroLevel);
-			heroLevel++;
-			heroMaxHp = 40 + HeroCurves.pow112(heroLevel) / 8;
-			heroAtk = 6 + heroLevel * 2 + HeroCurves.pow112(heroLevel) / 64;
-			heroHp = heroMaxHp;
-			log += " 레벨 " + heroLevel + " 달성!";
+			knockedOutCheck();
 		}
 	}
 
@@ -490,14 +584,23 @@ public final class Game extends JFrame {
 			return;
 		}
 		potions--;
-		int healed = Math.min(40, heroMaxHp - heroHp);
-		heroHp += healed;
+		int healed = Math.min(40, hero.maxHp - hero.hp);
+		hero.hp += healed;
 		log = "물약 사용. HP +" + healed;
 	}
 
 	private void draw(Graphics2D g) {
 		g.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
 				RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+		if (selecting) {
+			// The slot screen is laid out on the original 480x320; fit it to the window width.
+			int w = VIEW_W * CELL + 16;
+			int h = w * SlotScreen.H / SlotScreen.W;
+			g.setColor(Color.BLACK);
+			g.fillRect(0, 0, getWidth(), getHeight());
+			g.drawImage(opening != null ? opening.render() : slotScreen.render(), 0, 0, w, h, null);
+			return;
+		}
 		g.setColor(new Color(10, 10, 14));
 		g.fillRect(0, 0, getWidth(), getHeight());
 
@@ -507,8 +610,11 @@ public final class Game extends JFrame {
 		g.drawImage(heroPortrait, 2, 2, 22, 22, null);
 		g.setFont(new Font("SansSerif", Font.PLAIN, 12));
 		g.setColor(new Color(230, 220, 200));
-		g.drawString("Lv" + heroLevel + " (" + heroExp + "/" + HeroCurves.pow088(heroLevel) + "EXP)   HP "
-				+ heroHp + "/" + heroMaxHp + "   ATK " + heroAtk + "   골드 " + gold + "   물약 " + potions,
+		int from = hero.levelExp(hero.level);
+		String expText = hero.level >= Hero.MAX_LEVEL ? "MAX"
+				: (hero.exp - from) + "/" + (hero.levelExp(hero.level + 1) - from);
+		g.drawString("Lv" + hero.level + " (" + expText + "EXP)   HP " + hero.hp + "/" + hero.maxHp
+				+ "   ATK " + hero.power() + "   골드 " + gold + "   물약 " + potions,
 				28, 16);
 		int foot = MAP_Y + VIEW_H * CELL;
 		g.setColor(new Color(180, 210, 240));
@@ -547,13 +653,15 @@ public final class Game extends JFrame {
 			if (m.x < camX || m.y < camY || m.x >= camX + VIEW_W || m.y >= camY + VIEW_H) {
 				continue;
 			}
-			// InitMonsOne anchors the sprite at the cell centre, and the engine draws it at its
-			// own size on a 16px grid, so the view scale carries over.
-			BufferedImage spr = monsterSprites == null ? null : monsterSprites.standing(m.variant);
-			if (spr != null) {
+			// InitMonsOne puts the monster's position at the cell centre and DrawMonsAnim draws every
+			// part relative to it, so the pose's anchor goes there; the view scale carries over.
+			PartSprites.Pose pose = monsterSprites == null ? null : monsterSprites.standing(m.variant);
+			if (pose != null) {
+				BufferedImage spr = pose.image();
 				int w = Math.max(1, spr.getWidth() * CELL / TILE);
 				int h = Math.max(1, spr.getHeight() * CELL / TILE);
-				g.drawImage(spr, px + CELL / 2 - w / 2, py + CELL / 2 - h / 2, w, h, null);
+				g.drawImage(spr, px + CELL / 2 - pose.anchorX() * CELL / TILE,
+						py + CELL / 2 - pose.anchorY() * CELL / TILE, w, h, null);
 			} else {
 				g.setColor(m.color());
 				g.fillOval(px + 4, py + 4, CELL - 8, CELL - 8);
@@ -564,11 +672,20 @@ public final class Game extends JFrame {
 		}
 		int hx = MAP_X + (heroX - camX) * CELL;
 		int hy = MAP_Y + (heroY - camY) * CELL;
-		g.setColor(new Color(250, 210, 90));
-		g.fillOval(hx + 3, hy + 3, CELL - 6, CELL - 6);
-		g.setColor(Color.BLACK);
-		g.drawOval(hx + 3, hy + 3, CELL - 6, CELL - 6);
-		bar(g, hx, hy + CELL - 5, (float) heroHp / heroMaxHp, new Color(80, 220, 120));
+		// DrawHeroAnim: the hero's position is the cell centre, as for monsters.
+		PartSprites.Pose pose;
+		try {
+			pose = heroAnim.pose(HeroAnim.wearing(items, hero.weapon, heroDir, HeroAnim.ACT_STAND),
+					(int) (playMillis / 124));
+		} catch (IOException e) {
+			pose = null;
+		}
+		if (pose != null) {
+			BufferedImage spr = pose.image();
+			g.drawImage(spr, hx + CELL / 2 - pose.anchorX() * CELL / TILE, hy + CELL / 2 - pose.anchorY() * CELL / TILE,
+					Math.max(1, spr.getWidth() * CELL / TILE), Math.max(1, spr.getHeight() * CELL / TILE), null);
+		}
+		bar(g, hx, hy + CELL - 5, (float) hero.hp / hero.maxHp, new Color(80, 220, 120));
 	}
 
 	/** Deterministic stand-in shading derived from the real cell byte. */
@@ -610,48 +727,66 @@ public final class Game extends JFrame {
 	private void save() {
 		try {
 			Properties p = new Properties();
+			p.setProperty("name", hero.name);
+			p.setProperty("class", String.valueOf(hero.heroClass));
+			p.setProperty("mode", "0");
+			p.setProperty("playTime", String.valueOf(playMillis * 12 / 1000));
+			p.setProperty("map", mapCode);
 			p.setProperty("x", String.valueOf(heroX));
 			p.setProperty("y", String.valueOf(heroY));
-			p.setProperty("hp", String.valueOf(heroHp));
+			p.setProperty("hp", String.valueOf(hero.hp));
 			p.setProperty("gold", String.valueOf(gold));
 			p.setProperty("potions", String.valueOf(potions));
-			p.setProperty("level", String.valueOf(heroLevel));
-			p.setProperty("exp", String.valueOf(heroExp));
+			p.setProperty("level", String.valueOf(hero.level));
+			p.setProperty("exp", String.valueOf(hero.exp));
+			p.setProperty("stats", hero.con + "," + hero.dex + "," + hero.str + "," + hero.intel);
 			p.setProperty("monsters", monsters.stream()
 					.map(m -> String.join(",", String.valueOf(m.x), String.valueOf(m.y), m.kind,
 							String.valueOf(m.hp), String.valueOf(m.atk), String.valueOf(m.variant),
 							String.valueOf(m.aggressive), String.valueOf(m.loX), String.valueOf(m.loY),
 							String.valueOf(m.hiX), String.valueOf(m.hiY), String.valueOf(m.idle),
-							String.valueOf(m.state), String.valueOf(m.facing)))
+							String.valueOf(m.state), String.valueOf(m.facing), String.valueOf(m.level),
+							String.valueOf(m.defence), String.valueOf(m.accuracy), String.valueOf(m.dodge),
+							String.valueOf(m.crit)))
 					.reduce((a, b) -> a + ";" + b).orElse(""));
-			try (OutputStream os = Files.newOutputStream(saveFile())) {
-				p.store(os, "wawa save");
+			try (OutputStream os = Files.newOutputStream(saveFile(slotIndex))) {
+				p.store(os, "wawa save slot " + slotIndex);
 			}
-			log = "저장 완료: " + saveFile();
+			log = "저장 완료: " + saveFile(slotIndex);
 		} catch (IOException e) {
 			log = "저장 실패: " + e;
 		}
 	}
 
+	/** LoadSlot: rebuilds the hero and the map from the current slot's file. */
 	private void load() {
-		if (!Files.exists(saveFile())) {
+		Path file = saveFile(slotIndex);
+		if (!Files.exists(file)) {
 			log = "저장 파일이 없다.";
 			return;
 		}
 		try {
 			Properties p = new Properties();
-			try (InputStream is = Files.newInputStream(saveFile())) {
+			try (InputStream is = Files.newInputStream(file)) {
 				p.load(is);
 			}
+			newHero(Integer.parseInt(p.getProperty("class", "0")), p.getProperty("name", ""));
+			playMillis = Long.parseLong(p.getProperty("playTime", "0")) * 1000 / 12;
+			loadMap(p.getProperty("map", MAP_CODES[0]));
 			heroX = Integer.parseInt(p.getProperty("x", "10"));
 			heroY = Integer.parseInt(p.getProperty("y", "12"));
-			heroHp = Integer.parseInt(p.getProperty("hp", "120"));
 			gold = Integer.parseInt(p.getProperty("gold", "300"));
 			potions = Integer.parseInt(p.getProperty("potions", "3"));
-			heroLevel = Integer.parseInt(p.getProperty("level", "1"));
-			heroExp = Integer.parseInt(p.getProperty("exp", "0"));
-			heroMaxHp = 40 + HeroCurves.pow112(heroLevel) / 8;
-			heroAtk = 6 + heroLevel * 2 + HeroCurves.pow112(heroLevel) / 64;
+			hero.level = Integer.parseInt(p.getProperty("level", "1"));
+			hero.exp = Integer.parseInt(p.getProperty("exp", String.valueOf(hero.levelExp(hero.level))));
+			String[] st = p.getProperty("stats", hero.con + "," + hero.dex + "," + hero.str
+					+ "," + hero.intel).split(",");
+			hero.con = Integer.parseInt(st[0]);
+			hero.dex = Integer.parseInt(st[1]);
+			hero.str = Integer.parseInt(st[2]);
+			hero.intel = Integer.parseInt(st[3]);
+			hero.recompute(rng);
+			hero.hp = Math.min(hero.maxHp, Integer.parseInt(p.getProperty("hp", String.valueOf(hero.maxHp))));
 			monsters.clear();
 			String blob = p.getProperty("monsters", "");
 			if (!blob.isBlank()) {
@@ -664,6 +799,13 @@ public final class Game extends JFrame {
 					m.idle = Boolean.parseBoolean(f[11]);
 					m.state = Integer.parseInt(f[12]);
 					m.facing = Integer.parseInt(f[13]);
+					if (f.length > 18) {
+						m.level = Integer.parseInt(f[14]);
+						m.defence = Integer.parseInt(f[15]);
+						m.accuracy = Integer.parseInt(f[16]);
+						m.dodge = Integer.parseInt(f[17]);
+						m.crit = Integer.parseInt(f[18]);
+					}
 					monsters.add(m);
 				}
 			}
@@ -673,8 +815,9 @@ public final class Game extends JFrame {
 		}
 	}
 
-	private static Path saveFile() {
-		return Path.of(System.getProperty("wawa.save", "wawa-save.properties"));
+	/** One properties file per slot, the port's stand-in for slot%d.dat. */
+	private static Path saveFile(int slot) {
+		return Path.of(System.getProperty("wawa.save", "wawa-slot") + slot + ".properties");
 	}
 
 	/**
@@ -699,10 +842,12 @@ public final class Game extends JFrame {
 		final int loY;
 		final int hiX;
 		final int hiY;
-		/** Per-mille crit resistance read from the monster record at +0x3e. */
-		int critResist;
-		/** Mirrors the +0x1d flag: unset means the target takes half damage. */
-		boolean guarded;
+		int level;
+		/** InitMonsAbility's +0x74, +0x78, +0x7c and +0x80. */
+		int defence;
+		int accuracy;
+		int dodge;
+		int crit;
 
 		Monster(int x, int y, String kind, int hp, int atk, int variant, boolean aggressive,
 				int loX, int loY, int hiX, int hiY) {
@@ -748,8 +893,14 @@ public final class Game extends JFrame {
 			System.setProperty("wawa.assets", args[0]);
 		}
 		if (args.length > 1 && "--selftest".equals(args[1])) {
-			Game g = new Game();
-			g.selfTest(new java.io.File("out/selftest.png"));
+			// On the event thread, so the 62 ms game timer cannot tick while the script runs.
+			javax.swing.SwingUtilities.invokeAndWait(() -> {
+				try {
+					new Game().selfTest(new java.io.File("out/selftest.png"));
+				} catch (IOException e) {
+					throw new java.io.UncheckedIOException(e);
+				}
+			});
 			System.exit(0);
 		}
 		Game g = new Game();
@@ -757,8 +908,33 @@ public final class Game extends JFrame {
 		g.setVisible(true);
 	}
 
-	/** Drives scripted input and writes the resulting frame, so behaviour is verifiable without GUI automation. */
+	/**
+	 * Drives scripted input through the slot screen and a short fight, writing a frame of each
+	 * stage next to {@code shot}, so behaviour is verifiable without GUI automation.
+	 */
 	void selfTest(java.io.File shot) throws IOException {
+		java.io.File dir = shot.getAbsoluteFile().getParentFile();
+		writeFrame(new java.io.File(dir, "logo.png"));
+		for (int i = 0; i < 80; i++) {
+			opening.render();
+		}
+		writeFrame(new java.io.File(dir, "title.png"));
+		onKey(KeyEvent.VK_ENTER);
+		onKey(KeyEvent.VK_DOWN);
+		writeFrame(new java.io.File(dir, "title-menu.png"));
+		onKey(KeyEvent.VK_UP);
+		onKey(KeyEvent.VK_ENTER);
+		writeFrame(new java.io.File(dir, "slots.png"));
+		onKey(KeyEvent.VK_ENTER);
+		onKey(KeyEvent.VK_ENTER);
+		for (char c : "와와".toCharArray()) {
+			slotScreen.typed(c);
+		}
+		onKey(KeyEvent.VK_ENTER);
+		onKey(KeyEvent.VK_RIGHT);
+		writeFrame(new java.io.File(dir, "newgame.png"));
+		onKey(KeyEvent.VK_ENTER);
+		loadMap(MAP_CODES[0]);
 		int[] keys = {
 			KeyEvent.VK_RIGHT, KeyEvent.VK_RIGHT, KeyEvent.VK_DOWN, KeyEvent.VK_DOWN,
 			KeyEvent.VK_RIGHT, KeyEvent.VK_RIGHT, KeyEvent.VK_RIGHT
@@ -775,22 +951,30 @@ public final class Game extends JFrame {
 			} else {
 				walkTo(target.x, target.y);
 			}
-			if (heroLevel > 3) {
+			if (hero.level > 3) {
 				break;
 			}
 			target = nearestMonster();
 		}
+		playMillis += 3_725_000;
 		save();
 		load();
+		writeFrame(shot);
+		System.out.println("slot=" + slotIndex + " name=" + hero.name + " class=" + hero.heroClass
+				+ " map=" + mapCode + " hero=" + heroX + "," + heroY + " lv=" + hero.level + " exp=" + hero.exp
+				+ " hp=" + hero.hp + "/" + hero.maxHp + " atk=" + hero.power() + " gold=" + gold
+				+ " monsters=" + monsters.size() + " log=" + log);
+		Game again = new Game();
+		again.writeFrame(new java.io.File(dir, "slots-after.png"));
+	}
+
+	private void writeFrame(java.io.File file) throws IOException {
 		java.awt.image.BufferedImage img = new java.awt.image.BufferedImage(
 				VIEW_W * CELL + 16, MAP_Y + VIEW_H * CELL + 46, java.awt.image.BufferedImage.TYPE_INT_RGB);
 		Graphics2D g2 = img.createGraphics();
 		draw(g2);
 		g2.dispose();
-		Files.write(shot.toPath(), toPng(img));
-		System.out.println("hero=" + heroX + "," + heroY + " lv=" + heroLevel + " exp=" + heroExp
-				+ " hp=" + heroHp + "/" + heroMaxHp + " atk=" + heroAtk + " gold=" + gold
-				+ " monsters=" + monsters.size() + " log=" + log);
+		Files.write(file.toPath(), toPng(img));
 	}
 
 	private Monster nearestMonster() {
