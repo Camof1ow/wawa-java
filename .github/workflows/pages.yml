@@ -29,7 +29,8 @@ jobs:
         run: |
           sh ./gradlew generateJavaScript
           mkdir -p build/site
-          cp build/generated/teavm/js/wawa.js web/index.html web/wild.apk build/site/
+          # No part of the original ships with the site: players load their own wild.apk.
+          cp build/generated/teavm/js/wawa.js web/index.html build/site/
           cp src/main/resources/wawa/GalmuriMono11.ttf src/main/resources/wawa/Galmuri-LICENSE.txt build/site/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

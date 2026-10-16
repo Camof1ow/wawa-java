@@ -49,9 +49,10 @@ Screenshots and measurements in these notes come from running the original in an
 
 - JDK 17 or newer (the port uses records and switch expressions; the browser build targets 17).
   The browser build uses the bundled Gradle wrapper (8.14), which needs JAVA_HOME on a JDK 17–24.
-- The original `wild.apk`: a copy sits in `web/wild.apk` for the browser build. `wawa.Game` reads
-  it in place (assets and `lib/armeabi/libwawa.so`); the tools take an extracted `assets/`
-  directory, with `lib/armeabi/libwawa.so` next to it.
+- Your own copy of the original `wild.apk`. This repository and the site ship no part of it (no
+  APK, assets, library or decompiled code). `wawa.Game` reads the APK in place (assets and
+  `lib/armeabi/libwawa.so`); the tools take an extracted `assets/` directory, with
+  `lib/armeabi/libwawa.so` next to it.
 
 ## Build and run
 
@@ -60,7 +61,7 @@ javac -encoding UTF-8 -d out $(find src -name '*.java')
 cp -r src/main/resources/* out/    # the text font
 
 # playable slice, straight from the APK or from an extracted assets/ directory
-java -cp out wawa.Game web/wild.apk
+java -cp out wawa.Game <path-to-your-wild.apk>
 
 # load every shipped map, area and monster table and report what came back
 java -cp out wawa.CheckMapsRun <path-to-assets>
@@ -76,12 +77,14 @@ so the render can be checked without a GUI.
 
 ## Play in the browser
 
-GitHub Pages serves `web/index.html`, `web/wild.apk` and `wawa.js` (`.github/workflows/pages.yml`
-builds it on every push to `main`). `wawa.js` is the game compiled ahead of time to JavaScript by
-TeaVM 0.14.1 from `wawa.WebMain` (`web/src`, the only source that needs TeaVM's browser API) and
-everything it reaches; desktop-only classes (Swing, ImageIO, the tools) are not translated. The page
-downloads the APK, unpacks `assets/` and `libwawa.so` in memory and draws onto a 416×312 canvas
-scaled to the window. Saves go to the browser's localStorage (`wawa-*` keys).
+GitHub Pages serves `web/index.html`, `wawa.js` and the font (`.github/workflows/pages.yml` builds
+it on every push to `main`); it does not serve the APK. `wawa.js` is the game compiled ahead of time
+to JavaScript by TeaVM 0.14.1 from `wawa.WebMain` (`web/src`, the only source that needs TeaVM's
+browser API) and everything it reaches; desktop-only classes (Swing, ImageIO, the tools) are not
+translated. The player picks their own `wild.apk` once; the page keeps it in the browser's
+IndexedDB (never uploading it), unpacks `assets/` and `libwawa.so` in memory and draws onto a
+416×312 canvas scaled to the window. A file that is not Wild Frontier's APK is forgotten and the
+page asks again. Saves go to the browser's localStorage (`wawa-*` keys).
 
 Text is not drawn into the game's pixels: `Gfx` records each character in the cell the original's
 bitmap font would use, and the screen draws it at display resolution with GalmuriMono11 (by Lee
@@ -94,7 +97,24 @@ To try it locally:
 ```bash
 sh ./gradlew generateJavaScript
 cp build/generated/teavm/js/wawa.js src/main/resources/wawa/GalmuriMono11.ttf web/
-npx http-server web    # or any static server; opening index.html as file:// cannot fetch the APK
+npx http-server web    # or any static server; the page asks for your wild.apk on first load
+```
+
+## Decompiling the library locally
+
+The decompiled C of `libwawa.so` is not committed. `tools/ghidra` regenerates it from your copy with
+Ghidra 12 headless: `jumptables.py` computes the Thumb PIC switch tables and the in-function far
+`bl` branches Ghidra misses, `ApplyJumpTables.java` applies them as JumpTable overrides and branch
+flow overrides, and `DumpBySystem.java` writes one C file per feature. With those applied, every
+named function decompiles and none is left cut at a jump table.
+
+```bash
+analyzeHeadless <project-dir> wawa -import libwawa.so -scriptPath tools/ghidra \
+  -postScript DumpBySystem.java decomp            # first pass, to find the cut switches
+python tools/ghidra/jumptables.py libwawa.so decomp jumptables.txt   # repeat with the next dump until "0 new"
+analyzeHeadless <new-project-dir> wawa -import libwawa.so -scriptPath tools/ghidra \
+  -postScript ApplyJumpTables.java jumptables.txt jumptables.txt.far check.c \
+  -postScript DumpBySystem.java decomp
 ```
 
 ## Layout

@@ -19,11 +19,70 @@
   }
   /* Holds keyboard focus so input methods compose here; invisible, over the canvas's top-left. */
   #ime { position: absolute; left: 0; top: 26px; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; }
+  #apk { margin-left: 8px; color: #ddd; }
 </style>
 <script src="wawa.js"></script>
+<script>
+  // The game's graphics, sound and tables are the player's own wild.apk. It is picked once, kept in
+  // this browser (IndexedDB) and never uploaded; this site ships no part of the original.
+  const DB = "wawa-apk", STORE = "files", KEY = "wild.apk";
+  function open() {
+    return new Promise((ok, err) => {
+      const r = indexedDB.open(DB, 1);
+      r.onupgradeneeded = () => r.result.createObjectStore(STORE);
+      r.onsuccess = () => ok(r.result);
+      r.onerror = () => err(r.error);
+    });
+  }
+  async function stored() {
+    const db = await open();
+    return new Promise((ok) => {
+      const q = db.transaction(STORE).objectStore(STORE).get(KEY);
+      q.onsuccess = () => ok(q.result || null);
+      q.onerror = () => ok(null);
+    });
+  }
+  async function keep(buf, del) {
+    const db = await open();
+    return new Promise((ok) => {
+      const t = db.transaction(STORE, "readwrite");
+      if (del) t.objectStore(STORE).delete(KEY); else t.objectStore(STORE).put(buf, KEY);
+      t.oncomplete = ok;
+      t.onerror = ok;
+    });
+  }
+  function ask(text) {
+    document.getElementById("status").textContent = text;
+    const pick = document.getElementById("apk");
+    pick.hidden = false;
+    pick.onchange = async () => {
+      const file = pick.files[0];
+      if (!file) return;
+      const buf = await file.arrayBuffer();
+      await keep(buf).catch(() => {});
+      run(buf);
+    };
+  }
+  function run(buf) {
+    document.getElementById("apk").hidden = true;
+    window.wawaApk = buf;
+    main();
+  }
+  // WebMain calls this when the file is not Wild Frontier's APK: forget it and ask again.
+  window.wawaReject = () => {
+    keep(null, true).catch(() => {});
+    ask("와일드 프론티어 APK가 아닙니다. wild.apk를 다시 고르세요.");
+  };
+  async function boot() {
+    await document.fonts.load("16px GalmuriMono11").catch(() => {});
+    const buf = await stored().catch(() => null);
+    if (buf) run(buf);
+    else ask("가지고 있는 wild.apk를 고르면 시작합니다. 파일은 이 브라우저에만 보관되고 어디에도 올라가지 않습니다.");
+  }
+</script>
 </head>
-<body onload="document.fonts.load('16px GalmuriMono11').catch(() => {}).then(() => main())">
-<div id="bar"><span id="status">불러오는 중…</span><a href="https://github.com/Camof1ow/wawa-java">소스</a></div>
+<body onload="boot()">
+<div id="bar"><span id="status">불러오는 중…</span><input id="apk" type="file" accept=".apk" hidden><a href="https://github.com/Camof1ow/wawa-java">소스</a></div>
 <canvas id="screen" width="416" height="312"></canvas>
 <input id="ime" type="text" autocomplete="off" aria-label="키보드 입력">
 </body>

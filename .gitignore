@@ -2,9 +2,12 @@ out/
 *.class
 wawa-save.properties
 
-# The original APK's assets are not redistributed; point the tools at your own extraction.
+# Nothing of the original is redistributed: not the APK, its assets or its library, and not code
+# decompiled from it. The tools take your own copy; tools/ghidra regenerates the decompilation locally.
+*.apk
 assets/
 extract/
+decomp/
 
 # Gradle (browser build)
 .gradle/

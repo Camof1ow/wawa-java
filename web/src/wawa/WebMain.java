@@ -8,7 +8,6 @@ import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import org.teavm.jso.JSBody;
-import org.teavm.jso.ajax.XMLHttpRequest;
 import org.teavm.jso.browser.Window;
 import org.teavm.jso.canvas.CanvasRenderingContext2D;
 import org.teavm.jso.canvas.ImageData;
@@ -24,8 +23,9 @@ import org.teavm.jso.typedarrays.Int32Array;
 import org.teavm.jso.typedarrays.Int8Array;
 
 /**
- * Browser entry point (TeaVM): fetches {@code wild.apk} next to the page, unpacks the files the
- * game reads, and drives {@link GameCore} from a 62 ms interval onto the {@code #screen} canvas.
+ * Browser entry point (TeaVM): takes the player's own {@code wild.apk} from the page (picked once and
+ * kept in IndexedDB by index.html), unpacks the files the game reads, and drives {@link GameCore}
+ * from a 62 ms interval onto the {@code #screen} canvas.
  * Keys come from the document, typed text from the hidden {@code #ime} input (which also hosts
  * input method composition), and saves go to localStorage.
  */
@@ -41,31 +41,29 @@ public final class WebMain {
 	public static void main(String[] args) {
 		HTMLDocument doc = Window.current().getDocument();
 		status = doc.getElementById("status");
-		XMLHttpRequest xhr = new XMLHttpRequest();
-		xhr.open("GET", "wild.apk");
-		xhr.setResponseType("arraybuffer");
-		xhr.onProgress(e -> {
-			if (e.isLengthComputable() && e.getTotal() > 0) {
-				status.setInnerText("wild.apk 받는 중… " + (int) (100L * e.getLoaded() / e.getTotal()) + "%");
-			}
-		});
-		xhr.onComplete(() -> {
-			if (xhr.getStatus() != 200) {
-				status.setInnerText("wild.apk를 받지 못했습니다 (HTTP " + xhr.getStatus() + ")");
-				return;
-			}
-			status.setInnerText("푸는 중…");
-			// Let the status line paint before the unpacking blocks the page.
-			Window.setTimeout(() -> start(doc, (ArrayBuffer) xhr.getResponse()), 0);
-		});
-		xhr.onError(e -> status.setInnerText("wild.apk를 받지 못했습니다"));
-		xhr.send();
+		// index.html has read the player's file into window.wawaApk before calling main.
+		ArrayBuffer apk = pageApk();
+		status.setInnerText("푸는 중…");
+		// Let the status line paint before the unpacking blocks the page.
+		Window.setTimeout(() -> start(doc, apk), 0);
 	}
+
+	@JSBody(script = "return window.wawaApk;")
+	private static native ArrayBuffer pageApk();
+
+	@JSBody(script = "window.wawaReject();")
+	private static native void rejectApk();
 
 	private static void start(HTMLDocument doc, ArrayBuffer apk) {
 		GameCore game;
 		try {
-			game = new GameCore(Assets.of(unpack(new Int8Array(apk).copyToJavaArray())), new LocalStorage());
+			Map<String, byte[]> files = unpack(new Int8Array(apk).copyToJavaArray());
+			// Not Wild Frontier's APK: the page forgets it and asks for the file again.
+			if (!files.containsKey("lib/armeabi/libwawa.so") || !files.containsKey("assets/img/map.png")) {
+				rejectApk();
+				return;
+			}
+			game = new GameCore(Assets.of(files), new LocalStorage());
 		} catch (Exception ex) {
 			fail(ex);
 			return;

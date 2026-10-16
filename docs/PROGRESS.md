@@ -3,8 +3,9 @@
 Android 게임 와일드 프론티어(`wild.apk`)를 `libwawa.so` 역공학으로 Java에 다시 구현한 작업의 현재 상태다.
 포맷과 원작 함수 해석은 [`FORMATS.md`](FORMATS.md)에, 원작 실행 환경은 [`ORIGINAL-VM.md`](ORIGINAL-VM.md)에 있다.
 
-- **바로 플레이:** https://camof1ow.github.io/wawa-java/ (방향키 이동, Enter 확인·대화, F 빨리 넘기기, F5 저장, F9 불러오기)
-- **데스크톱:** `java -cp out wawa.Game web/wild.apk` (빌드는 README "Build and run")
+- **브라우저:** https://camof1ow.github.io/wawa-java/ — 처음 한 번 자기 `wild.apk`를 고르면 브라우저(IndexedDB)에 보관해 다음부터 바로 시작한다. 파일은 어디에도 올라가지 않는다. (방향키 이동, Enter 확인·대화, F 빨리 넘기기, F5 저장, F9 불러오기)
+- **데스크톱:** `java -cp out wawa.Game <자기 wild.apk>` (빌드는 README "Build and run")
+- **배포 원칙:** 저장소와 사이트에는 원작의 어떤 부분도 없다(APK, 자산, 라이브러리, 디컴파일 코드). 디컴파일은 README "Decompiling the library locally"의 도구로 각자 로컬에서 만든다.
 
 ## 1. 지금 되는 것
 
@@ -39,7 +40,7 @@ flowchart LR
 
 - **`GameCore`:** 게임 전체를 담는다. `tick()`(62ms), `render(Gfx)`(416×312), `key`, `typed`, `click`을 제공한다. AWT·Swing·`java.nio.file`은 쓰지 않는다.
 - **`Game`(데스크톱):** 창 맞춤 확대, 타이머, 키·입력기·마우스 전달을 맡는다. 저장은 `wawa-slotN.properties` 파일에 하고, `--selftest`로 창 없이 화면 PNG를 만든다.
-- **`WebMain`(웹):** `wild.apk`를 받아 메모리에서 풀고, canvas에 그린다. 저장은 localStorage(`wawa-` 접두사)에 한다.
+- **`WebMain`(웹):** 페이지가 넘겨준 사용자 `wild.apk`를 메모리에서 풀고, canvas에 그린다. 와일드 프론티어 APK가 아니면 보관본을 지우고 다시 묻는다. 저장은 localStorage(`wawa-` 접두사)에 한다.
 - **자산 접근:** `Assets`가 APK 루트 기준 경로("assets/img/x.png")로 읽는다. 데스크톱 구현은 `ApkAssets`(APK)와 `DirAssets`(풀어 둔 폴더)이고, 웹은 `Assets.of(Map)`이다.
 - **한글 인코딩:** TeaVM에는 MS949가 없다. 그래서 EUC-KR ⇄ 유니코드 변환은 `Ksc`가 자체 표 `KscTable`로 한다.
 
@@ -53,7 +54,7 @@ flowchart LR
 | 조작 가능 | 30.7초 | 4.6초 |
 
 - **로컬 측정:** 첫 화면 1.3초, 조작 가능 1.4초.
-- **받는 파일:** `wawa.js` 518 KB, 글꼴 633 KB, `wild.apk` 24.9 MB.
+- **받는 파일:** `wawa.js` 518 KB, 글꼴 633 KB. `wild.apk`(24.9 MB)는 사용자 파일이라 받지 않는다.
 - **빌드:** `sh ./gradlew generateJavaScript`(JAVA_HOME은 JDK 17)를 돌리면 `build/generated/teavm/js/wawa.js`가 나온다. Pages 워크플로(`.github/workflows/pages.yml`)가 main에 push할 때마다 빌드해서 배포한다.
 - **데스크톱 빌드:** 바뀌지 않았다. `javac`로 컴파일한 뒤 `src/main/resources`를 출력 폴더에 복사하면 된다.
 
