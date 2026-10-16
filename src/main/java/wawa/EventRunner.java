@@ -44,7 +44,11 @@ final class EventRunner {
 		/** 83: walk the hero to a cell. */
 		void heroWalk(int x, int y, int dir);
 
-		/** 93 / a3: fade the hero out (placing it) or back in. */
+		/**
+		 * 93 / a3: the hero appears where it is placed, or vanishes. Hero +0x1d is a fade step that
+		 * DrawHeroAnim moves up by one per frame and draws at alpha |step| (6 and up unseen): 93 sets
+		 * -3 (fades in to 0, fully drawn), a3 sets 1 (fades out).
+		 */
 		void heroVisible(boolean visible, int x, int y, int dir);
 
 		/** b3: hero direction and action. */
@@ -624,10 +628,10 @@ final class EventRunner {
 				return 0;
 			case 9:
 				w.heroStop();
-				w.heroVisible(false, d[a] & 0xff, d[a + 1] & 0xff, d[a + 2] & 0xff);
+				w.heroVisible(true, d[a] & 0xff, d[a + 1] & 0xff, d[a + 2] & 0xff);
 				return 4;
 			case 0xa:
-				w.heroVisible(true, 0xff, 0xff, 8);
+				w.heroVisible(false, 0xff, 0xff, 8);
 				return 4;
 			case 0xb:
 				w.heroStop();

@@ -1071,12 +1071,14 @@ public final class Game extends JFrame {
 						m.goHold = (dir & 0x80) == 0;
 					}
 				}
+				// +0x42 is the unit's fade step, like the hero's: 43 sets -3 (fade in, as a new unit
+				// does), 53 sets 1 (fade out). t01 sends units off the map edge and then 53s them.
 				case 4 -> {
-					m.hidden = true;
+					m.hidden = false;
 					return 4;
 				}
 				case 5 -> {
-					m.hidden = false;
+					m.hidden = true;
 					return 4;
 				}
 				case 6 -> {
