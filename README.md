@@ -26,7 +26,9 @@ logic is re-derived from the native code, and every format is decoded from the s
 - **Terrain**: each map's collision grid is built as LoadGameBlock builds it, from the tile sets'
   `g_anTileBlock` tables in `libwawa.so` (`BlockGrid`). Deep water, cliffs, cave walls and lava
   stop the hero; shallow water and bridges do not. Walking into a blocking tile steps aside to
-  the side that opens within two cells, still facing the same way, as NewCollPath does.
+  the side that opens within two cells, still facing the same way, as NewCollPath does. Monsters
+  stop at the same grid through their id's `g_anMonsBlock` mask (CollMonsPath): most at the
+  hero's terrain, 33 kinds cross deep water and 4 cross everything.
 - **Event scripts**: `eve/*.evk` phases run as the original interprets them (`EventRunner`): a new
   game plays t01's opening with its captions, dialogue (portraits, names, typing; Enter advances,
   F toggles fast mode), NPC units, hero moves, camera, fades and emote bubbles. NPC events start

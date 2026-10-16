@@ -610,10 +610,10 @@ final class GameCore {
 				m.idle = false;
 				if (dist == 1) {
 					monsterStrike(m);
-				} else if (dx != 0 && monsterAt(m.x + dx, m.y) == null) {
+				} else if (dx != 0 && monsterAt(m.x + dx, m.y) == null && !monsterBlocked(m, m.x + dx, m.y)) {
 					m.x += dx;
 					m.facing = dx > 0 ? 1 : 3;
-				} else if (dy != 0 && monsterAt(m.x, m.y + dy) == null) {
+				} else if (dy != 0 && monsterAt(m.x, m.y + dy) == null && !monsterBlocked(m, m.x, m.y + dy)) {
 					m.y += dy;
 					m.facing = dy > 0 ? 2 : 0;
 				}
@@ -642,12 +642,26 @@ final class GameCore {
 			int ny = m.facing < 2 ? m.y : Math.floorDiv(py + CELL / 2, CELL);
 			nx = Math.max(m.pixelLoX() / 16, Math.min(m.pixelHiX() / 16 - 1, nx));
 			ny = Math.max(m.pixelLoY() / 16, Math.min(m.pixelHiY() / 16 - 1, ny));
-			if (nx != m.x && monsterAt(nx, m.y) == null && (nx != heroX || ny != m.y)) {
+			if (nx != m.x && monsterAt(nx, m.y) == null && (nx != heroX || ny != m.y) && !monsterBlocked(m, nx, m.y)) {
 				m.x = nx;
-			} else if (ny != m.y && monsterAt(m.x, ny) == null && (m.x != heroX || ny != heroY)) {
+			} else if (ny != m.y && monsterAt(m.x, ny) == null && (m.x != heroX || ny != heroY)
+					&& !monsterBlocked(m, m.x, ny)) {
 				m.y = ny;
 			}
 		}
+	}
+
+	/** g_anMonsBlock: CollMonsPath's u8 collision mask per monster id. */
+	private static final int MONS_BLOCK = 0xbea0c;
+
+	/**
+	 * CollMonsPath's test on the block grid with g_anMonsBlock[id]. 175 ids carry 0x2b and stop at
+	 * the hero's terrain, 33 carry 0x02 and cross tiles without bit 1 (deep water is 5), 4 carry 0
+	 * and cross everything. The spawn footprint bits 0x08 and 0x20 are left out: this port does not
+	 * lay the footprints into the grid.
+	 */
+	private boolean monsterBlocked(Monster m, int x, int y) {
+		return block.blocks(x, y, so.u8(MONS_BLOCK + m.variant) & 7);
 	}
 
 	private void monsterStrike(Monster m) {
@@ -2568,6 +2582,10 @@ final class GameCore {
 		loadMap("t01");
 		monsters.clear();
 		System.out.println("terrain " + holdFrom(27, 10, 3, 6) + " " + holdFrom(15, 17, 1, 4));
+		// CollMonsPath on the same grid: a monster in t01's shallow water at (27,9) chases the hero
+		// over the deep sea at (28,9) (tile 5). g_anMonsBlock id 1 (0x2b) stops there; id 66 (0x02,
+		// no bit 0) and id 124 (0) go on, so the x values read 27 28 28.
+		System.out.println("monster-terrain " + chaseFrom(1) + " " + chaseFrom(66) + " " + chaseFrom(124));
 		new GameCore(assets, storage).writeFrame(sink, "slots-after.png");
 	}
 
@@ -2606,5 +2624,16 @@ final class GameCore {
 		}
 		heldDir = -1;
 		return x + "," + y + "->" + heroX + "," + heroY + " dir=" + heroDir;
+	}
+
+	/** Selftest: one aggressive monster of {@code id} at (27,9), the hero at (29,9), one monsterTick; its x. */
+	private int chaseFrom(int id) {
+		monsters.clear();
+		Monster m = new Monster(27, 9, "#" + id, 1, 0, id, true, 25, 7, 29, 11);
+		monsters.add(m);
+		heroX = 29;
+		heroY = 9;
+		monsterTick();
+		return m.x;
 	}
 }

@@ -32,6 +32,11 @@ final class BlockGrid {
 
 	/** CollHeroPath's terrain test; a cell off the map counts as terrain. */
 	boolean terrain(int x, int y) {
-		return x < 0 || y < 0 || x >= width || y >= height || (cells[y * width + x] & 3) != 0;
+		return blocks(x, y, 3);
+	}
+
+	/** Whether the cell's tile has any of {@code mask}'s bits (CollMonsPath's mask); a cell off the map always does. */
+	boolean blocks(int x, int y, int mask) {
+		return x < 0 || y < 0 || x >= width || y >= height || (cells[y * width + x] & mask) != 0;
 	}
 }
