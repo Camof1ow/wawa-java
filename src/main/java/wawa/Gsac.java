@@ -147,6 +147,22 @@ public final class Gsac {
 	 * falls back to the first.
 	 */
 	Img frame(int index, int row) {
+		return decode(index, row > 0 && row < paletteRowCount ? row * paletteRowLength : 0, 0);
+	}
+
+	/**
+	 * DrawSpriteClixPal and DrawGOrderIcon: palette row {@code row} counting the archive's own
+	 * rows too (paletteCols rows of paletteRows colours) when no external palette replaced it, and
+	 * when {@code tint} is not 0 (ARGB) palette entry 1 drawn in that colour instead. A row past the
+	 * end falls back to the first.
+	 */
+	Img frame(int index, int row, int tint) {
+		int rows = paletteRowCount > 1 ? paletteRowCount : paletteCols;
+		int length = paletteRowCount > 1 ? paletteRowLength : paletteRows;
+		return decode(index, row > 0 && row < rows ? row * length : 0, tint);
+	}
+
+	private Img decode(int index, int base, int tint) {
 		if (!fullyDecodable()) {
 			throw new IllegalStateException(source + " mode " + mode() + " not supported yet");
 		}
@@ -163,11 +179,10 @@ public final class Gsac {
 		} else {
 			pixels = decodeRle(data, index);
 		}
-		int base = row > 0 && row < paletteRowCount ? row * paletteRowLength : 0;
 		Img img = new Img(w, h);
 		for (int i = 0; i < w * h; i++) {
 			int idx = pixels[at + i] & 0xFF;
-			img.px[i] = idx == KEY_INDEX ? 0 : argb(base + idx);
+			img.px[i] = idx == KEY_INDEX ? 0 : idx == 1 && tint != 0 ? tint : argb(base + idx);
 		}
 		return img;
 	}
@@ -198,6 +213,18 @@ public final class Gsac {
 				g.paletteRowCount = raw[raw.length - 2] & 0xFF;
 				g.paletteRowLength = raw[raw.length - 1] & 0xFF;
 			}
+		}
+		return g;
+	}
+
+	/** LoadGOrderIcon: the archive with its own palette replaced by pal/&lt;name&gt;.png's rows. */
+	static Gsac loadWithPalette(Assets assets, String file, String paletteFile) throws IOException {
+		Gsac g = load(assets, file);
+		byte[] raw = assets.read(paletteFile);
+		g.palette = externalPalette(raw);
+		if (raw.length >= 2) {
+			g.paletteRowCount = raw[raw.length - 2] & 0xFF;
+			g.paletteRowLength = raw[raw.length - 1] & 0xFF;
 		}
 		return g;
 	}

@@ -116,6 +116,22 @@ public final class Item {
 		return s == null ? "" : s;
 	}
 
+	/** g_anItem bits 5..7: a weapon's kind (sword, axe, blunt) or a material's use. */
+	public int element(int id) {
+		return elf.u32(KIND + id * 4) >> 5 & 7;
+	}
+
+	/** Record +3 length, +4 EUC-KR text: the line GetGOrderItemSummary shows for types 0x10 and 0x14, else "". */
+	public String description(int id) {
+		int t = type(id);
+		if (t != 0x10 && t != 0x14) {
+			return "";
+		}
+		int r = record(id);
+		byte[] b = elf.bytes(r + 4, elf.u8(r + 3));
+		return Ksc.decode(b, 0, b.length);
+	}
+
 	private int record(int id) {
 		return EX + elf.s16(EX + id * 2) + EX_BASE;
 	}

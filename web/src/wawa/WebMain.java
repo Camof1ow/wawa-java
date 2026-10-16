@@ -159,7 +159,7 @@ public final class WebMain {
 				fail(ex);
 				return;
 			}
-			status.setInnerText("방향키 이동, Enter 확인·대화, F 빨리 넘기기, 1 공격, 2 물약, F5 저장, F9 불러오기");
+			status.setInnerText("방향키 이동, Enter 확인·대화, F 빨리 넘기기, 1 공격, 2 물약, I 가방, F5 저장, F9 불러오기");
 		}, 0));
 		timer = Window.setInterval(() -> {
 			try {

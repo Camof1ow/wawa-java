@@ -29,6 +29,7 @@ final class Keys {
 	static final int A = 65;
 	static final int D = 68;
 	static final int F = 70;
+	static final int I = 73;
 	static final int S = 83;
 	static final int W = 87;
 	static final int OPEN_BRACKET = 91;

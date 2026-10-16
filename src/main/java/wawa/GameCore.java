@@ -85,6 +85,50 @@ final class GameCore {
 	private static final int GATE_TEXT = 0xd22f8;
 	private static final int GATE_ENTER = 0xd2b10;
 	private static final int GATE_CANCEL = 0xd2bf0;
+	/** The menu's ITEM tab (GOrder, opened with CLEAR or I): the field stands still while it is open. */
+	private ItemMenu itemMenu;
+	private boolean menuOpen;
+	/** A GMenu over the menu: a confirmation runs menuYes on "O.확인"; a message has none. */
+	private boolean menuGMenu;
+	private Runnable menuYes;
+	/** DrawGMenuButtonAll's 0x180000 and 0x900 labels: "O.확인" and "X.취소". */
+	private static final int OK_LABEL = 0xd2b20;
+	private static final int CANCEL_LABEL = 0xd2c3c;
+	private final ItemMenu.Host menuHost = new ItemMenu.Host() {
+		@Override
+		public void confirm(byte[] title, byte[] text, Runnable onYes) {
+			talk.startWarning(title, text, so.cbytes(OK_LABEL), so.cbytes(CANCEL_LABEL));
+			menuGMenu = true;
+			menuYes = onYes;
+		}
+
+		@Override
+		public void message(byte[] text) {
+			talk.startNotice(text, 0, text.length);
+			menuGMenu = true;
+			menuYes = null;
+		}
+
+		@Override
+		public void use(int id) {
+			useItem(id);
+		}
+
+		@Override
+		public void changed() {
+			hero.recompute(rng);
+		}
+
+		@Override
+		public void close() {
+			menuOpen = false;
+		}
+
+		@Override
+		public void notPorted(String what) {
+			log = what + ": 아직 포팅되지 않았습니다";
+		}
+	};
 	private Gsac imoticon;
 	/**
 	 * DrawFade's value (wawamain+0x2ec0): 1..7 darken by v/8, 8 and up cover the view, negative
@@ -233,7 +277,7 @@ final class GameCore {
 	void tick() {
 		if (!selecting) {
 			playMillis += delay;
-			if (bossGate == null) {
+			if (bossGate == null && !menuOpen) {
 				gameTick();
 			}
 		}
@@ -753,6 +797,10 @@ final class GameCore {
 			}
 			return;
 		}
+		if (menuOpen) {
+			menuKey(code);
+			return;
+		}
 		// KeyPressGamePlay hands every key to KeyPressPhase first; a running phase eats it.
 		if (events.key(code)) {
 			return;
@@ -767,6 +815,7 @@ final class GameCore {
 			case Keys.K2 -> drinkPotion();
 			case Keys.F5 -> save();
 			case Keys.F9 -> load();
+			case Keys.I, Keys.BACK_SPACE -> openMenu();
 			case Keys.ESCAPE -> quit = true;
 			case Keys.K3, Keys.K4, Keys.K5, Keys.K6, Keys.K7, Keys.K8, Keys.K9, Keys.K0, Keys.MINUS,
 					Keys.EQUALS, Keys.BACK_QUOTE, Keys.OPEN_BRACKET -> {
@@ -1003,14 +1052,62 @@ final class GameCore {
 	private void drinkPotion() {
 		for (int id = POTION; id <= LAST_POTION; id++) {
 			if (hero.inv.count(id, -1) > 0) {
-				int before = hero.hp;
-				events.execPhase(2, items.script(id), true);
-				hero.inv.remove(id, 1, -1);
-				log = items.name(id) + " 사용. HP +" + (hero.hp - before);
+				useItem(id);
 				return;
 			}
 		}
 		log = "회복 물약이 없다.";
+	}
+
+	/** FuncUseItem: a consumable's global phase (record +0) runs, then DelItem takes one. */
+	private void useItem(int id) {
+		int t = items.type(id);
+		if (t != 0xe && t != 0xf) {
+			log = items.name(id) + " 사용: 아직 포팅되지 않았습니다";
+			return;
+		}
+		int before = hero.hp;
+		events.execPhase(2, items.script(id), true);
+		hero.inv.remove(id, 1, -1);
+		log = items.name(id) + " 사용. HP +" + (hero.hp - before);
+	}
+
+	/** CLEAR in play opens GOrder; only its ITEM tab is ported, so the menu opens there. */
+	private void openMenu() {
+		try {
+			if (itemMenu == null) {
+				itemMenu = new ItemMenu(assets, so, items, heroAnim);
+			}
+		} catch (IOException e) {
+			log = "메뉴 로드 실패: " + e;
+			return;
+		}
+		changeHeroAct(HeroAnim.ACT_STAND);
+		itemMenu.open(hero, menuHost);
+		menuOpen = true;
+	}
+
+	/** KeyPressGMenu over the menu first, else KeyPressGOrder. */
+	private void menuKey(int code) {
+		if (menuGMenu) {
+			if (menuYes != null) {
+				int r = talk.warningKey(code);
+				if (r >= 0) {
+					Runnable yes = menuYes;
+					menuGMenu = false;
+					menuYes = null;
+					talk.clear();
+					if (r == 1) {
+						yes.run();
+					}
+				}
+			} else if (talk.key(code, 0, null, null, null) || code == Keys.ESCAPE || code == Keys.BACK_SPACE) {
+				menuGMenu = false;
+				talk.clear();
+			}
+			return;
+		}
+		itemMenu.key(code);
 	}
 
 	private int potionCount() {
@@ -1046,12 +1143,17 @@ final class GameCore {
 		// Below the 480x320 overlay's scaled bottom edge (OVERLAY_H = 277), so phases do not cover them.
 		g.drawString(log, MAP_X, OVERLAY_H, 0xfffae696);
 		// One line of the 16 px font is all that fits under the log; the map keys (3..[) stay unlisted.
-		g.drawString("Enter 대화 1 공격 2 물약 F5 저장 F9 불러오기 ESC 종료", MAP_X, OVERLAY_H + 18, 0xffaaa596);
-		if (events.overlay() || bossGate != null) {
+		g.drawString("Enter 대화 1 공격 2 물약 I 가방 F5 저장 F9 불러오기 ESC 종료", MAP_X, OVERLAY_H + 18, 0xffaaa596);
+		if (events.overlay() || bossGate != null || menuOpen) {
 			// DrawPhase and DrawGMenu work on the original 480x320 screen; fit it like the slot screen.
 			Arrays.fill(overlay.px, 0);
 			Gfx og = new Gfx(overlay);
-			if (bossGate != null) {
+			if (menuOpen) {
+				itemMenu.draw(og);
+				if (menuGMenu) {
+					talk.draw(og, 0, true);
+				}
+			} else if (bossGate != null) {
 				// A GMenu is not a phase: no fast/slow button.
 				talk.draw(og, 0, true);
 			} else {
@@ -2724,6 +2826,41 @@ final class GameCore {
 		hero.inv.add(POTION, 1, 0, true, rng);
 		drinkPotion();
 		System.out.println("potion hp=1->" + hero.hp + " left=" + potionCount() + " running=" + events.active());
+		// ITEM tab: I opens the menu on the category bar, DOWN enters the slot grid at slot 1 (the
+		// worn dagger); its popup's second row, 해제, takes it off. SELECT on the now empty slot lists
+		// the bag gear that fits it, and that item's 장착 puts it back. CLEAR three times closes.
+		Item.Equip dagger = hero.inv.worn(1);
+		key(Keys.I);
+		boolean opened = menuOpen;
+		key(Keys.DOWN);
+		writeFrame(sink, "menu-item.png");
+		key(Keys.ENTER);
+		key(Keys.DOWN);
+		key(Keys.ENTER);
+		String off = (hero.inv.worn(1) == null) + "/" + hero.power();
+		key(Keys.ENTER);
+		key(Keys.ENTER);
+		writeFrame(sink, "menu-popup.png");
+		key(Keys.ENTER);
+		String on = (hero.inv.worn(1) == dagger) + "/" + hero.power();
+		key(Keys.BACK_SPACE);
+		key(Keys.BACK_SPACE);
+		key(Keys.BACK_SPACE);
+		// Consumables: RIGHT on the bar picks tab 1, the first stack's popup starts on 사용, GMenu
+		// 0xcc's O.확인 runs FuncUseItem, and one potion is gone.
+		int potions = potionCount();
+		key(Keys.I);
+		key(Keys.RIGHT);
+		key(Keys.DOWN);
+		key(Keys.ENTER);
+		key(Keys.ENTER);
+		key(Keys.ENTER);
+		String used = potions + "->" + potionCount();
+		key(Keys.BACK_SPACE);
+		key(Keys.BACK_SPACE);
+		key(Keys.BACK_SPACE);
+		System.out.println("menu open=" + opened + " unequip=" + off + " wear=" + on + " use=" + used + " closed="
+				+ !menuOpen);
 		new GameCore(assets, storage).writeFrame(sink, "slots-after.png");
 	}
 
