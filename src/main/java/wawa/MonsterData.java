@@ -1,9 +1,5 @@
 package wawa;
 
-import java.io.IOException;
-import java.nio.charset.Charset;
-import java.nio.file.Path;
-
 /**
  * Per-monster data read out of lib/armeabi/libwawa.so, where the native build keeps it as
  * read-only tables.
@@ -53,16 +49,14 @@ public final class MonsterData {
 	/** The name table runs to 0xd2; InitMonsOne guards its stat path on ids below 0xa6. */
 	public static final int COUNT = 211;
 
-	private static final Charset KOREAN = Charset.forName("MS949");
-
 	private final ElfImage elf;
 
 	private MonsterData(ElfImage elf) {
 		this.elf = elf;
 	}
 
-	public static MonsterData load(Path so) throws IOException {
-		return new MonsterData(ElfImage.read(so));
+	static MonsterData load(ElfImage so) {
+		return new MonsterData(so);
 	}
 
 	/** The kind a monster id belongs to; several ids share one kind. */
@@ -97,7 +91,7 @@ public final class MonsterData {
 
 	/** The shipped name, e.g. "뿔어금니 보어", or null when the entry is empty. */
 	public String name(int monsterId) {
-		return elf.cstring(elf.u32(NAME_TABLE + clamp(monsterId) * 4), KOREAN);
+		return elf.cstring(elf.u32(NAME_TABLE + clamp(monsterId) * 4));
 	}
 
 	public String spriteName(int monsterId) {

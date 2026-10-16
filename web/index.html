@@ -5,34 +5,26 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>와일드 프론티어 Java 포트</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #000; color: #ddd; font-family: sans-serif; }
-  body { display: flex; flex-direction: column; }
-  #status { margin: 4px 8px; font-size: 13px; color: #fc6; }
-  /* The game fills what is left of the page and scales itself to it, keeping its aspect. */
-  #display { flex: 1; min-height: 0; }
+  /* The game's text font (SIL OFL 1.1, Galmuri-LICENSE.txt). */
+  @font-face { font-family: GalmuriMono11; src: url(GalmuriMono11.ttf) format("truetype"); }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; color: #ddd; font-family: sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; }
+  #bar { align-self: stretch; margin: 4px 8px; height: 18px; font-size: 13px; color: #fc6; white-space: nowrap; overflow: hidden; }
+  #bar a { color: #9cf; float: right; }
+  /* 416x312 is 4:3; the canvas grows to the largest 4:3 box under the status line. */
+  #screen {
+    width: min(100vw, calc((100vh - 26px) * 4 / 3));
+    aspect-ratio: 4 / 3;
+    image-rendering: pixelated;
+  }
+  /* Holds keyboard focus so input methods compose here; invisible, over the canvas's top-left. */
+  #ime { position: absolute; left: 0; top: 26px; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; }
 </style>
-<script src="https://cjrtnc.leaningtech.com/4.3/loader.js"></script>
+<script src="wawa.js"></script>
 </head>
-<body>
-<div id="status">Java 런타임을 불러오는 중… (처음에는 1분쯤 걸립니다)</div>
-<div id="display"></div>
-<script type="module">
-  // CheerpJ serves this page's directory under /app/; the jar and the APK sit next to index.html,
-  // and Java opens the APK in place through its zip file system (HTTP range reads).
-  const base = "/app" + location.pathname.replace(/[^/]*$/, "");
-  await cheerpjInit({
-    version: 17,
-    status: "splash",
-    // cjGetRuntimeResources() after the title screen: the runtime files fetched in parallel at
-    // start instead of one by one on demand (measured 19.7 s -> 13.0 s to the first window locally).
-    preloadResources: {"/lt/17/lib/modules":[0,131072,1179648,4718592,4849664,5898240,6029312,6291456,6422528,6553600,6684672,7208960,7602176,7733248,7864320,8388608,9437184,9699328,9830400,10223616,19005440,19136512,19660800,20447232,21102592,22806528,22937600,23592960,23724032,23986176,25165824,25559040,26083328,27525120,27656192,27787264,34471936,34603008,35389440,35520512,37617664,37748736,37879808,38273024],"/lt/etc/users":[0,131072],"/lt/etc/localtime":[],"/lt/17/jre/lib/cheerpj-handlers.jar":[0,131072],"/lt/17/jre/lib/cheerpj-awt.jar":[0,131072],"/lt/17/jre/lib/cheerpj-jsobject.jar":[0,131072],"/lt/17/conf/security/java.security":[0,131072],"/lt/17/conf/accessibility.properties":[],"/lt/17/conf/swing.properties":[],"/lt/17/lib/tzdb.dat":[0,131072],"/lt/17/lib/fonts/badfonts.txt":[],"/lt/17/lib/fonts":[],"/lt/fc/fonts/fonts.conf":[0,131072],"/lt/fc/ttf":[],"/lt/fc/cache/e21edda6a7db77f35ca341e0c3cb2a22-le32d8.cache-7":[0,131072],"/lt/17/lib/fonts/fallback":[],"/lt/fc/ttf/LiberationSans-Regular.ttf":[0,131072,262144,393216]},
-    javaProperties: ["wawa.save=/files/wawa-slot", "wawa.web=1"],
-  });
-  document.getElementById("status").innerHTML =
-    "화면을 한 번 누른 뒤 조작: 방향키 이동, Enter 확인·대화, F 빨리 넘기기, 1 공격, 2 물약, F5 저장, F9 불러오기 · " +
-    "<a style='color:#9cf' href='https://github.com/Camof1ow/wawa-java'>소스</a>";
-  cheerpjCreateDisplay(-1, -1, document.getElementById("display"));
-  await cheerpjRunMain("wawa.Game", base + "wawa.jar", base + "wild.apk");
-</script>
+<body onload="document.fonts.load('16px GalmuriMono11').catch(() => {}).then(() => main())">
+<div id="bar"><span id="status">불러오는 중…</span><a href="https://github.com/Camof1ow/wawa-java">소스</a></div>
+<canvas id="screen" width="416" height="312"></canvas>
+<input id="ime" type="text" autocomplete="off" aria-label="키보드 입력">
 </body>
 </html>

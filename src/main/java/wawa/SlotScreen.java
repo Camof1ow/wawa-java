@@ -1,15 +1,6 @@
 package wawa;
 
-import java.awt.AlphaComposite;
-import java.awt.Color;
-import java.awt.Font;
-import java.awt.FontMetrics;
-import java.awt.Graphics2D;
-import java.awt.event.KeyEvent;
-import java.awt.image.BufferedImage;
 import java.io.IOException;
-import java.nio.charset.Charset;
-import java.nio.file.Path;
 
 /**
  * The scene a game starts on: the three save slots around the camp (InitSelectSlot,
@@ -40,7 +31,7 @@ final class SlotScreen {
 	static final int SLOTS = 3;
 	/** The name buffer the hero record keeps is 0xb bytes including the terminator. */
 	private static final int NAME_BYTES = 10;
-	private static final Charset KOREAN = Charset.forName("MS949");
+	private static final int WHITE = 0xffffffff;
 
 	private static final int JOB_NAME = 0xe5a88;
 	private static final int JOB_SUMMARY = 0xe5b18;
@@ -93,15 +84,15 @@ final class SlotScreen {
 	private String name = "";
 	private String notice = "";
 
-	SlotScreen(Path assets, ElfImage elf, Item items, Summary[] slots) throws IOException {
+	SlotScreen(Assets assets, ElfImage elf, Item items, Summary[] slots) throws IOException {
 		this.elf = elf;
 		this.items = items;
 		this.heroes = new HeroAnim(assets, elf);
 		this.slots = slots;
-		this.map = MapData.load(assets.resolve("eng/map/a.png"), "a13");
+		this.map = MapData.load(assets, "assets/eng/map/a.png", "a13");
 		this.tiles = Tiles.load(assets, map);
-		this.gorder = Gsac.loadCompanion(assets.resolve("img/gorder.png"));
-		this.imenu = Gsac.loadCompanion(assets.resolve("img/imenu.png"));
+		this.gorder = Gsac.loadCompanion(assets, "assets/img/gorder.png");
+		this.imenu = Gsac.loadCompanion(assets, "assets/img/imenu.png");
 	}
 
 	int slot() {
@@ -119,24 +110,24 @@ final class SlotScreen {
 		switch (phase) {
 			case SELECT -> {
 				switch (code) {
-					case KeyEvent.VK_LEFT -> slot = (slot + SLOTS - 1) % SLOTS;
-					case KeyEvent.VK_RIGHT -> slot = (slot + 1) % SLOTS;
-					case KeyEvent.VK_UP, KeyEvent.VK_DOWN -> {
+					case Keys.LEFT -> slot = (slot + SLOTS - 1) % SLOTS;
+					case Keys.RIGHT -> slot = (slot + 1) % SLOTS;
+					case Keys.UP, Keys.DOWN -> {
 						if (slots[slot] != null) {
 							phase = Phase.MENU;
 							menuIndex = 0;
 						}
 					}
-					case KeyEvent.VK_ENTER, KeyEvent.VK_SPACE -> {
+					case Keys.ENTER, Keys.SPACE -> {
 						return open();
 					}
-					case KeyEvent.VK_DELETE -> {
+					case Keys.DELETE -> {
 						if (slots[slot] != null) {
 							phase = Phase.MENU;
 							menuIndex = 1;
 						}
 					}
-					case KeyEvent.VK_ESCAPE -> {
+					case Keys.ESCAPE -> {
 						return new Action.Quit();
 					}
 					default -> {
@@ -145,9 +136,9 @@ final class SlotScreen {
 			}
 			case MENU -> {
 				switch (code) {
-					case KeyEvent.VK_UP, KeyEvent.VK_DOWN -> menuIndex ^= 1;
-					case KeyEvent.VK_ESCAPE -> phase = Phase.SELECT;
-					case KeyEvent.VK_ENTER, KeyEvent.VK_SPACE -> {
+					case Keys.UP, Keys.DOWN -> menuIndex ^= 1;
+					case Keys.ESCAPE -> phase = Phase.SELECT;
+					case Keys.ENTER, Keys.SPACE -> {
 						phase = Phase.SELECT;
 						return menuIndex == 0 ? open() : new Action.Delete(slot);
 					}
@@ -157,19 +148,19 @@ final class SlotScreen {
 			}
 			case NEW_GAME -> {
 				switch (code) {
-					case KeyEvent.VK_UP -> row = (row + 1) % 2;
-					case KeyEvent.VK_DOWN -> row = (row + 1) % 2;
-					case KeyEvent.VK_LEFT -> {
+					case Keys.UP -> row = (row + 1) % 2;
+					case Keys.DOWN -> row = (row + 1) % 2;
+					case Keys.LEFT -> {
 						if (row == 1) {
 							heroClass = (heroClass + 2) % 3;
 						}
 					}
-					case KeyEvent.VK_RIGHT -> {
+					case Keys.RIGHT -> {
 						if (row == 1) {
 							heroClass = (heroClass + 1) % 3;
 						}
 					}
-					case KeyEvent.VK_ENTER, KeyEvent.VK_SPACE -> {
+					case Keys.ENTER, Keys.SPACE -> {
 						if (row == 0) {
 							phase = Phase.TYPING;
 						} else if (name.isBlank()) {
@@ -181,18 +172,18 @@ final class SlotScreen {
 							return new Action.NewGame(slot, name.strip(), heroClass);
 						}
 					}
-					case KeyEvent.VK_ESCAPE -> phase = Phase.SELECT;
+					case Keys.ESCAPE -> phase = Phase.SELECT;
 					default -> {
 					}
 				}
 			}
 			case TYPING -> {
 				switch (code) {
-					case KeyEvent.VK_ENTER, KeyEvent.VK_ESCAPE -> {
+					case Keys.ENTER, Keys.ESCAPE -> {
 						phase = Phase.NEW_GAME;
 						row = 1;
 					}
-					case KeyEvent.VK_BACK_SPACE -> {
+					case Keys.BACK_SPACE -> {
 						if (!name.isEmpty()) {
 							name = name.substring(0, name.length() - 1);
 						}
@@ -211,7 +202,7 @@ final class SlotScreen {
 			return;
 		}
 		String next = name + c;
-		if (next.getBytes(KOREAN).length <= NAME_BYTES) {
+		if (Ksc.encode(next).length <= NAME_BYTES) {
 			name = next;
 		}
 	}
@@ -230,24 +221,23 @@ final class SlotScreen {
 		phase = Phase.NEW_GAME;
 		row = 0;
 		heroClass = 0;
-		name = elf.cstring(DEFAULT_NAME, KOREAN);
+		name = elf.cstring(DEFAULT_NAME);
 		return null;
 	}
 
-	BufferedImage render() {
-		BufferedImage img = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
-		Graphics2D g = img.createGraphics();
-		g.setFont(new Font("SansSerif", Font.PLAIN, 11));
+	Img render() {
+		Img img = new Img(W, H);
+		Gfx g = new Gfx(img);
 		ticks++;
 		drawScene(g);
 		if (phase == Phase.NEW_GAME || phase == Phase.TYPING) {
 			// GOrder 7 opens over the faded camp scene in place of the slot labels.
-			fill(g, 0, 0, W, H, new Color(0, 0, 0, 110));
+			g.fillRect(0, 0, W, H, 110 << 24);
 			drawNewGame(g);
 		} else {
 			drawSlotHeroes(g);
 			bar(g, 0, 14, W, 19);
-			text(g, "슬롯선택", 0, 14, W, 19, Color.WHITE, true);
+			text(g, "슬롯선택", 0, 14, W, 19, WHITE, true);
 			sprite(g, 88, CURSOR[slot][0], CURSOR[slot][1]);
 			drawPopup(g);
 			if (phase == Phase.MENU) {
@@ -256,26 +246,24 @@ final class SlotScreen {
 		}
 		if (!notice.isEmpty()) {
 			bar(g, 130, 286, 220, 17);
-			text(g, notice, 130, 286, 220, 17, new Color(255, 220, 120), true);
+			text(g, notice, 130, 286, 220, 17, 0xffffdc78, true);
 		}
-		g.dispose();
 		return img;
 	}
 
 	/** clix_gorder[0x16c + slot]: where the marker above the chosen hero goes. */
 	private static final int[][] CURSOR = { { 192, 98 }, { 240, 90 }, { 288, 98 } };
 
-	private void drawScene(Graphics2D g) {
-		g.setColor(Color.BLACK);
-		g.fillRect(0, 0, W, H);
+	private void drawScene(Gfx g) {
+		g.fillRect(0, 0, W, H, 0xff000000);
 		int x0 = Math.floorDiv(CAMERA_X, 16);
 		int y0 = Math.floorDiv(CAMERA_Y, 16);
 		for (int ty = y0; ty <= y0 + H / 16 + 1; ty++) {
 			for (int tx = x0; tx <= x0 + W / 16 + 1; tx++) {
 				int cell = map.cell(tx, ty);
-				BufferedImage f = cell == 0xff ? null : tiles.patch(map.layer(tx, ty), cell);
+				Img f = cell == 0xff ? null : tiles.patch(map.layer(tx, ty), cell);
 				if (f != null) {
-					g.drawImage(f, tx * 16 - CAMERA_X, ty * 16 - CAMERA_Y, null);
+					g.drawImage(f, tx * 16 - CAMERA_X, ty * 16 - CAMERA_Y);
 				}
 			}
 		}
@@ -285,12 +273,12 @@ final class SlotScreen {
 	 * The three slot heroes at the camp. InitSelectSlotHero seats every slot hero (act 0x26) and
 	 * stands the chosen one (act 0); an empty slot shows "SLOT" instead.
 	 */
-	private void drawSlotHeroes(Graphics2D g) {
+	private void drawSlotHeroes(Gfx g) {
 		for (int i = 0; i < SLOTS; i++) {
 			int x = 0x1a8 + 0x30 * i - CAMERA_X;
 			int y = (i == 1 ? 0xa8 : 0xb0) - CAMERA_Y;
 			if (slots[i] == null) {
-				text(g, "SLOT", x - 40, y - 10, 80, 10, Color.WHITE, true);
+				text(g, "SLOT", x - 40, y - 10, 80, 10, WHITE, true);
 			} else {
 				int act = i == slot ? HeroAnim.ACT_STAND : HeroAnim.ACT_SIT;
 				hero(g, slots[i].look().withAct(act), x, y);
@@ -299,7 +287,7 @@ final class SlotScreen {
 	}
 
 	/** DrawHeroAnim with the hero's position at (x, y); the animation steps every other frame. */
-	private void hero(Graphics2D g, HeroAnim.Look look, int x, int y) {
+	private void hero(Gfx g, HeroAnim.Look look, int x, int y) {
 		// ponytail: one step per two frames stands in for the per-record delay CalcHeroAnim counts.
 		PartSprites.Pose p;
 		try {
@@ -308,67 +296,68 @@ final class SlotScreen {
 			p = null;
 		}
 		if (p != null) {
-			g.drawImage(p.image(), x - p.anchorX(), y - p.anchorY(), null);
+			g.drawImage(p.image(), x - p.anchorX(), y - p.anchorY());
 		}
 	}
 
-	private void drawPopup(Graphics2D g) {
+	private void drawPopup(Gfx g) {
 		int dx = (slot - 1) * 16;
 		int dy = slot == 1 ? 100 : 108;
 		// ponytail: DrawGMenuBack's style-0 frame is a jump table not traced; imenu frame 3
 		// (240x80) is the panel that fits the rectangles DrawPopupSlot writes into.
-		g.drawImage(imenu.frame(3), 140 + dx, 100 + dy, null);
+		g.drawImage(imenu.frame(3), 140 + dx, 100 + dy);
 		Summary s = slots[slot];
-		Color ink = new Color(70, 40, 20);
+		int ink = 0xff462814;
 		text(g, s == null ? "빈슬롯" : s.name(), 147 + dx, 108 + dy, 228, 15, ink, true);
-		g.setColor(ink);
-		g.drawLine(147 + dx, 125 + dy, 147 + dx + 227, 125 + dy);
+		g.fillRect(147 + dx, 125 + dy, 228, 1, ink);
 		line(g, "MODE", s == null ? "" : jobText(DIFFICULTY, s.mode()), 199 + dx, 138 + dy, ink);
 		line(g, "PLAY TIME", s == null || s.playTime() == 0 ? "--:--:--" : playTime(s.playTime()),
 				199 + dx, 150 + dy, ink);
 		line(g, "LEVEL", s == null ? "" : String.format("%02d", s.level()), 199 + dx, 162 + dy, ink);
 		if (s != null) {
-			sprite(g, 23 + s.heroClass(), 307 + dx, 138 + dy);
+			// clix_gorder puts the icon at x 307; "PLAY TIME  hh:mm:ss" in DrawString's font runs to
+			// 342, so it moves to the panel's right edge.
+			sprite(g, 23 + s.heroClass(), 352 + dx, 138 + dy);
 		}
 	}
 
 	/** DrawSlotSelect: the continue / delete list at (0xb2, 0xd2). */
-	private void drawMenu(Graphics2D g) {
+	private void drawMenu(Gfx g) {
 		String[] items = { "이어하기", "삭제하기" };
 		for (int i = 0; i < 2; i++) {
 			int y = 0xd2 + i * 20;
-			fill(g, 0xb2, y, 124, 18, i == menuIndex ? new Color(200, 120, 40, 220) : new Color(0, 0, 0, 170));
-			text(g, items[i], 0xb2, y, 124, 18, Color.WHITE, true);
+			g.fillRect(0xb2, y, 124, 18, i == menuIndex ? 0xdcc87828 : 170 << 24);
+			text(g, items[i], 0xb2, y, 124, 18, WHITE, true);
 		}
 	}
 
-	private void drawNewGame(Graphics2D g) {
-		Color sel = new Color(200, 120, 40, 200);
-		Color off = new Color(0, 0, 0, 170);
-		fill(g, 150, 20, 220, 20, row == 0 ? sel : off);
-		text(g, "NAME", 154, 20, 60, 20, Color.WHITE, false);
-		text(g, phase == Phase.TYPING ? name + "_" : name, 214, 20, 150, 20, Color.WHITE, false);
-		fill(g, 150, 50, 190, 20, row == 1 ? sel : off);
-		text(g, "SPECIALTY", 154, 50, 80, 20, Color.WHITE, false);
-		text(g, jobText(JOB_NAME, heroClass), 239, 50, 90, 20, Color.WHITE, true);
+	private void drawNewGame(Gfx g) {
+		int sel = 0xc8c87828;
+		int off = 170 << 24;
+		g.fillRect(150, 20, 220, 20, row == 0 ? sel : off);
+		text(g, "NAME", 154, 20, 60, 20, WHITE, false);
+		text(g, phase == Phase.TYPING ? name + "_" : name, 214, 20, 150, 20, WHITE, false);
+		g.fillRect(150, 50, 190, 20, row == 1 ? sel : off);
+		text(g, "SPECIALTY", 154, 50, 80, 20, WHITE, false);
+		text(g, jobText(JOB_NAME, heroClass), 239, 50, 90, 20, WHITE, true);
 		sprite(g, 62, 232, 56);
 		sprite(g, 63, 330, 56);
 		sprite(g, 23 + heroClass, 350, 50);
 		// The preview box shows SetGOrderNewGameHero's outfit for the class on prehero[1].
-		fill(g, 150, 80, 140, 90, new Color(0, 0, 0, 120));
+		g.fillRect(150, 80, 140, 90, 120 << 24);
 		hero(g, HeroAnim.preview(items, heroClass, HeroAnim.ACT_STAND), 220, 150);
 		for (int i = 0; i < 4; i++) {
 			int y = 80 + i * 18;
-			fill(g, 300, y, 70, 16, off);
-			text(g, jobText(PROP_NAME, i), 305, y, 30, 16, Color.WHITE, false);
-			text(g, String.valueOf(Hero.startStat(elf, heroClass, i)), 335, y, 30, 16, Color.WHITE, false);
+			g.fillRect(300, y, 70, 16, off);
+			text(g, jobText(PROP_NAME, i), 305, y, 30, 16, WHITE, false);
+			text(g, String.valueOf(Hero.startStat(elf, heroClass, i)), 335, y, 30, 16, WHITE, false);
 		}
-		fill(g, 145, 180, 230, 80, off);
+		g.fillRect(145, 180, 230, 80, off);
 		wrap(g, jobText(JOB_SUMMARY, heroClass), 151, 186, 218);
 	}
 
 	private String jobText(int table, int index) {
-		String s = elf.cstring(elf.u32(table + index * 4), KOREAN);
+		String s = elf.cstring(elf.u32(table + index * 4));
 		return s == null ? "" : s;
 	}
 
@@ -378,42 +367,32 @@ final class SlotScreen {
 	}
 
 	/** DrawPopupSlot writes "%s%s" (label, value) left-aligned from the line's x. */
-	private void line(Graphics2D g, String label, String value, int x, int y, Color ink) {
-		g.setColor(ink);
-		g.drawString(label + "  " + value, x, y + 5);
+	private void line(Gfx g, String label, String value, int x, int y, int ink) {
+		g.drawString(label + "  " + value, x, y, ink);
 	}
 
-	private void sprite(Graphics2D g, int frame, int x, int y) {
-		g.drawImage(gorder.frame(frame), x, y, null);
+	private void sprite(Gfx g, int frame, int x, int y) {
+		g.drawImage(gorder.frame(frame), x, y);
 	}
 
-	private static void bar(Graphics2D g, int x, int y, int w, int h) {
-		fill(g, x, y, w, h, new Color(0, 0, 0, 150));
+	private static void bar(Gfx g, int x, int y, int w, int h) {
+		g.fillRect(x, y, w, h, 150 << 24);
 	}
 
-	private static void fill(Graphics2D g, int x, int y, int w, int h, Color c) {
-		g.setComposite(AlphaComposite.SrcOver);
-		g.setColor(c);
-		g.fillRect(x, y, w, h);
+	/** DrawString's glyphs are 16 rows tall; y centres that cell in the box. */
+	private static void text(Gfx g, String s, int x, int y, int w, int h, int argb, boolean centre) {
+		int tx = centre ? x + (w - Gfx.stringWidth(s)) / 2 : x;
+		g.drawString(s, tx, y + (h - 16) / 2, argb);
 	}
 
-	private static void text(Graphics2D g, String s, int x, int y, int w, int h, Color c, boolean centre) {
-		FontMetrics fm = g.getFontMetrics();
-		int tx = centre ? x + (w - fm.stringWidth(s)) / 2 : x;
-		int ty = y + (h + fm.getAscent() - fm.getDescent()) / 2;
-		g.setColor(c);
-		g.drawString(s, tx, ty);
-	}
-
-	private static void wrap(Graphics2D g, String s, int x, int y, int w) {
-		FontMetrics fm = g.getFontMetrics();
-		g.setColor(Color.WHITE);
+	/** Breaks at '\n' and wherever the next character would pass {@code w}; lines are 16 px apart. */
+	private static void wrap(Gfx g, String s, int x, int y, int w) {
 		StringBuilder lineText = new StringBuilder();
-		int ty = y + fm.getAscent();
+		int ty = y;
 		for (char c : s.toCharArray()) {
-			if (c == '\n' || fm.stringWidth(lineText.toString() + c) > w) {
-				g.drawString(lineText.toString(), x, ty);
-				ty += fm.getHeight();
+			if (c == '\n' || Gfx.stringWidth(lineText.toString() + c) > w) {
+				g.drawString(lineText.toString(), x, ty, WHITE);
+				ty += 16;
 				lineText.setLength(0);
 				if (c == '\n') {
 					continue;
@@ -421,6 +400,6 @@ final class SlotScreen {
 			}
 			lineText.append(c);
 		}
-		g.drawString(lineText.toString(), x, ty);
+		g.drawString(lineText.toString(), x, ty, WHITE);
 	}
 }

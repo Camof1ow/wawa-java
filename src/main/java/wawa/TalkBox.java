@@ -1,15 +1,6 @@
 package wawa;
 
-import java.awt.Color;
-import java.awt.Font;
-import java.awt.Graphics2D;
-import java.awt.Shape;
-import java.awt.event.KeyEvent;
-import java.awt.image.BufferedImage;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.nio.charset.Charset;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -37,14 +28,13 @@ import java.util.Map;
  *          box in 0x1a2a4300 at a 17 px pitch and 70x20 DrawGMenuButton slots
  * </pre>
  *
- * The original draws with its own 16x15 bitmap font; this port draws each glyph with a Java font at
- * the original advances, so line breaks fall where the game puts them.
+ * The original draws with its own 16x15 bitmap font; {@link Gfx#drawText} draws that font, and line
+ * breaks follow InitTextboxWidth's advances.
  */
 final class TalkBox {
 
 	static final int W = SlotScreen.W;
 	static final int H = SlotScreen.H;
-	private static final Charset KOREAN = Charset.forName("MS949");
 	private static final int TALK_NAME = 0xe5b80;
 	private static final int TEXT_COLOR = 0xe58f4;
 	private static final int FACE = 0xddbc4;
@@ -64,7 +54,7 @@ final class TalkBox {
 
 	/** SetTextboxColor of the notice and choice text, also DrawTextOut's button outline. */
 	private static final int MENU_TEXT = 0x1a2a4300;
-	private static final byte[] CONFIRM = "확인".getBytes(KOREAN);
+	private static final byte[] CONFIRM = Ksc.encode("확인");
 	/** clix_gameui+0x308 (0, 55, 480, 19): the headline strip's top and its height per line. */
 	private static final int HEAD_Y = 55;
 	private static final int HEAD_LINE = 19;
@@ -78,13 +68,12 @@ final class TalkBox {
 	}
 
 	private final ElfImage so;
-	private final Path assets;
-	private final BufferedImage base;
-	private final BufferedImage fast;
-	private final BufferedImage slow;
+	private final Assets assets;
+	private final Img base;
+	private final Img fast;
+	private final Img slow;
 	private final Gsac imenu;
-	private final Map<String, BufferedImage> faces = new HashMap<>();
-	private final Font font = new Font("SansSerif", Font.PLAIN, 14);
+	private final Map<String, Img> faces = new HashMap<>();
 
 	Kind kind = Kind.NONE;
 	private byte[] d;
@@ -125,13 +114,13 @@ final class TalkBox {
 	private int headTimer;
 	private byte[] headNext;
 
-	TalkBox(Path assets, ElfImage so) throws IOException {
+	TalkBox(Assets assets, ElfImage so) throws IOException {
 		this.so = so;
 		this.assets = assets;
-		base = ResourceFile.image(assets.resolve("talk/btn_dialogue_base.png"));
-		fast = ResourceFile.image(assets.resolve("talk/btn_fast_base.png"));
-		slow = ResourceFile.image(assets.resolve("talk/btn_slow_base.png"));
-		imenu = Gsac.loadCompanion(assets.resolve("img/imenu.png"));
+		base = ResourceFile.image(assets, "assets/talk/btn_dialogue_base.png");
+		fast = ResourceFile.image(assets, "assets/talk/btn_fast_base.png");
+		slow = ResourceFile.image(assets, "assets/talk/btn_slow_base.png");
+		imenu = Gsac.loadCompanion(assets, "assets/img/imenu.png");
 	}
 
 	/** InitTalkScript: n records from d[off + 1]; the first is read at once. */
@@ -188,13 +177,13 @@ final class TalkBox {
 	 */
 	int choose(int code, boolean ready) {
 		int n = choiceLabels.length;
-		if (code >= KeyEvent.VK_1 && code <= KeyEvent.VK_3) {
-			int i = code - KeyEvent.VK_1;
+		if (code >= Keys.K1 && code <= Keys.K3) {
+			int i = code - Keys.K1;
 			return i < n && ready ? i : -1;
 		}
-		if (code == KeyEvent.VK_RIGHT || code == KeyEvent.VK_DOWN || code == KeyEvent.VK_6) {
+		if (code == Keys.RIGHT || code == Keys.DOWN || code == Keys.K6) {
 			cursor = cursor + 1 < n ? cursor + 1 : 0;
-		} else if (code == KeyEvent.VK_LEFT || code == KeyEvent.VK_UP || code == KeyEvent.VK_4) {
+		} else if (code == Keys.LEFT || code == Keys.UP || code == Keys.K4) {
 			cursor = cursor > 0 ? cursor - 1 : n - 1;
 		} else if (ready && ok(code)) {
 			return cursor;
@@ -308,9 +297,9 @@ final class TalkBox {
 		if (kind == Kind.TALK) {
 			if (ok) {
 				setState(state == 6 ? 0 : 1, mode, heroName, npcName, emotes);
-			} else if (state == 6 && (code == KeyEvent.VK_UP || code == KeyEvent.VK_2)) {
+			} else if (state == 6 && (code == Keys.UP || code == Keys.K2)) {
 				top = Math.max(0, top - VISIBLE);
-			} else if (state == 6 && (code == KeyEvent.VK_DOWN || code == KeyEvent.VK_8)) {
+			} else if (state == 6 && (code == Keys.DOWN || code == Keys.K8)) {
 				if (VISIBLE < lines.size() && top < lines.size() - VISIBLE) {
 					top += VISIBLE;
 				}
@@ -321,7 +310,7 @@ final class TalkBox {
 
 	/** The OK key (-5) or '5'. */
 	private static boolean ok(int code) {
-		return code == KeyEvent.VK_ENTER || code == KeyEvent.VK_SPACE || code == KeyEvent.VK_5;
+		return code == Keys.ENTER || code == Keys.SPACE || code == Keys.K5;
 	}
 
 	/** Caption '#': jump to its end. */
@@ -410,19 +399,23 @@ final class TalkBox {
 			case 0 -> null;
 			case 1 -> heroName;
 			case 2 -> npcName;
-			default -> so.cstring(so.u32(TALK_NAME + (nameSel - 3) * 4), KOREAN);
+			default -> so.cstring(so.u32(TALK_NAME + (nameSel - 3) * 4));
 		};
 		if (name == null) {
 			setText(body, 0, BOX_W);
 			return;
 		}
-		ByteArrayOutputStream b = new ByteArrayOutputStream();
-		byte[] nb = name.getBytes(KOREAN);
-		b.writeBytes(new byte[] { 7, '2', '[' });
-		b.writeBytes(nb);
-		b.writeBytes(new byte[] { ']', 7, '0' });
-		b.writeBytes(body);
-		setText(b.toByteArray(), nb.length + 6, BOX_W);
+		byte[] nb = Ksc.encode(name);
+		byte[] t = new byte[nb.length + 6 + body.length];
+		t[0] = 7;
+		t[1] = '2';
+		t[2] = '[';
+		System.arraycopy(nb, 0, t, 3, nb.length);
+		t[nb.length + 3] = ']';
+		t[nb.length + 4] = 7;
+		t[nb.length + 5] = '0';
+		System.arraycopy(body, 0, t, nb.length + 6, body.length);
+		setText(t, nb.length + 6, BOX_W);
 	}
 
 	private static byte[] slice(byte[] d, int off, int len) {
@@ -541,7 +534,7 @@ final class TalkBox {
 	}
 
 	/** DrawPhase for the box's kind, on the 480x320 overlay. */
-	void draw(Graphics2D g, int mode, boolean noSkip) {
+	void draw(Gfx g, int mode, boolean noSkip) {
 		switch (kind) {
 			case TALK -> drawTalk(g);
 			case CAPTION -> drawLines(g, 0, 24, W, H - 48, true, state == 4);
@@ -551,12 +544,12 @@ final class TalkBox {
 			}
 		}
 		if (!noSkip && mode < 2 && kind != Kind.NOTICE) {
-			g.drawImage(mode == 0 ? fast : slow, 400, 0, null);
+			g.drawImage(mode == 0 ? fast : slow, 400, 0);
 		}
 	}
 
-	private void drawTalk(Graphics2D g) {
-		g.drawImage(base, 0, 225, null);
+	private void drawTalk(Gfx g) {
+		g.drawImage(base, 0, 225);
 		int f = animFrame;
 		int a = Math.min(f, 4);
 		int b = Math.max(4 - f, 0);
@@ -581,11 +574,11 @@ final class TalkBox {
 	}
 
 	/** Lines from the top: while typing only up to the typing line, cut at what has been typed. */
-	private void drawLines(Graphics2D g, int x, int y, int w, int h, boolean centre, boolean typing) {
+	private void drawLines(Gfx g, int x, int y, int w, int h, boolean centre, boolean typing) {
 		if (lines.isEmpty()) {
 			return;
 		}
-		Shape clip = g.getClip();
+		int[] clip = g.getClip();
 		// DrawTextbox clips the dialogue box (flag 0x80); the caption box has no clip flag.
 		if (!typing && kind == Kind.TALK) {
 			g.clipRect(BOX_X, BOX_Y, BOX_W, BOX_H);
@@ -622,44 +615,37 @@ final class TalkBox {
 		return w;
 	}
 
-	/** DrawString: EUC-KR pairs 16 px, ASCII 8 (space 5), "\x07 d" switches colour. */
-	private void drawBytes(Graphics2D g, byte[] s, int from, int len, int x, int y, int defaultColor) {
-		g.setFont(font);
-		g.setColor(rgb(defaultColor));
-		int asc = g.getFontMetrics().getAscent();
-		int baseline = y + Math.min(asc, 15);
+	/** DrawString: EUC-KR pairs and ASCII through the original font, "\x07 d" switches colour. */
+	private void drawBytes(Gfx g, byte[] s, int from, int len, int x, int y, int defaultColor) {
+		int argb = rgb(defaultColor);
 		for (int i = from; i < from + len && i < s.length && s[i] != 0; i++) {
 			int c = s[i] & 0xff;
 			if (c == 7) {
 				int digit = s[++i] & 0xff;
-				g.setColor(digit == '0' ? rgb(defaultColor) : rgb(so.u32(TEXT_COLOR + (digit - '1') * 4)));
+				argb = digit == '0' ? rgb(defaultColor) : rgb(so.u32(TEXT_COLOR + (digit - '1') * 4));
 			} else if (c >= 0x80) {
-				g.drawString(new String(s, i, 2, KOREAN), x, baseline);
-				x += 16;
+				x += g.drawText(s, i, 2, x, y, argb);
 				i++;
 			} else if (c != '\n') {
-				if (c != ' ') {
-					g.drawString(String.valueOf((char) c), x, baseline);
-				}
-				x += advance(c);
+				x += g.drawText(s, i, 1, x, y, argb);
 			}
 		}
 	}
 
-	private static Color rgb(int bbggrr00) {
-		return new Color((bbggrr00 >>> 8) & 0xff, (bbggrr00 >>> 16) & 0xff, bbggrr00 >>> 24);
+	private static int rgb(int bbggrr00) {
+		return 0xff000000 | ((bbggrr00 >>> 8) & 0xff) << 16 | ((bbggrr00 >>> 16) & 0xff) << 8 | bbggrr00 >>> 24;
 	}
 
-	private void face(Graphics2D g, int id, int side) {
+	private void face(Gfx g, int id, int side) {
 		if (id - 1 < 0) {
 			return;
 		}
 		int group = so.u8(FACE + (id - 1) * 3);
 		int expr = (byte) so.u8(FACE + (id - 1) * 3 + 2);
 		String file = expr == -1 ? "talk/face" + group + ".png" : "talk/face" + group + "_" + (expr - 1) + ".png";
-		BufferedImage img = faces.computeIfAbsent(file, f -> {
+		Img img = faces.computeIfAbsent(file, f -> {
 			try {
-				return ResourceFile.image(assets.resolve(f));
+				return ResourceFile.image(assets, "assets/" + f);
 			} catch (IOException e) {
 				return null;
 			}
@@ -668,9 +654,9 @@ final class TalkBox {
 			return;
 		}
 		if (side == 0) {
-			g.drawImage(img, img.getWidth(), 60, -img.getWidth(), img.getHeight(), null);
+			g.drawImage(img, 0, 60, -img.w, img.h);
 		} else {
-			g.drawImage(img, 320, 60, null);
+			g.drawImage(img, 320, 60);
 		}
 	}
 
@@ -679,7 +665,7 @@ final class TalkBox {
 	 * (152, 105, 214, 120) top-aligned with each line centred across, and the confirm button
 	 * selected at clix_gmenu+0x248.
 	 */
-	private void drawNotice(Graphics2D g) {
+	private void drawNotice(Gfx g) {
 		menuBack(g, 90);
 		// (120 + 2) / 17 lines fit; DrawTextbox does not clip this box.
 		for (int k = 0; k < Math.min(lines.size(), 7); k++) {
@@ -695,7 +681,7 @@ final class TalkBox {
 	 * in the style-2 slots clix_gmenu+0x220 + 8p (x 160 + 65p, y 160): one choice takes the middle
 	 * slot, two the outer ones, three all.
 	 */
-	private void drawChoice(Graphics2D g) {
+	private void drawChoice(Gfx g) {
 		menuBack(g, 55);
 		if (!lines.isEmpty()) {
 			int[] ln = lines.get(0);
@@ -709,10 +695,9 @@ final class TalkBox {
 	}
 
 	/** DrawGMenuBack(0, 0, 1): DrawWholeFade (black 3/8 over the screen), then imenu frame 2 at x 140. */
-	private void menuBack(Graphics2D g, int y) {
-		g.setColor(new Color(0, 0, 0, 3 * 32));
-		g.fillRect(0, 0, W, H);
-		g.drawImage(imenu.frame(2), 140, y, null);
+	private void menuBack(Gfx g, int y) {
+		g.fillRect(0, 0, W, H, (3 * 32) << 24);
+		g.drawImage(imenu.frame(2), 140, y);
 	}
 
 	/**
@@ -720,17 +705,16 @@ final class TalkBox {
 	 * around it and white text outlined in {@link #MENU_TEXT}; otherwise black 2/8 and text in
 	 * 0xbbe9ff00. The text is centred both ways (flag 0x11).
 	 */
-	private void button(Graphics2D g, byte[] label, int x, int y, boolean selected) {
-		g.setColor(new Color(0, 0, 0, (selected ? 4 : 2) * 32));
-		g.fillRect(x, y, 70, 20);
+	private void button(Gfx g, byte[] label, int x, int y, boolean selected) {
+		g.fillRect(x, y, 70, 20, ((selected ? 4 : 2) * 32) << 24);
 		int tx = x + ((70 - width(label, 0, label.length)) >> 1);
 		int ty = y + ((20 - 15) >> 1);
 		if (selected) {
-			g.setColor(new Color(0, 0, 0, 5 * 32));
-			g.fillRect(x, y - 1, 70, 1);
-			g.fillRect(x, y + 20, 70, 1);
-			g.fillRect(x - 1, y, 1, 20);
-			g.fillRect(x + 70, y, 1, 20);
+			int ring = (5 * 32) << 24;
+			g.fillRect(x, y - 1, 70, 1, ring);
+			g.fillRect(x, y + 20, 70, 1, ring);
+			g.fillRect(x - 1, y, 1, 20, ring);
+			g.fillRect(x + 70, y, 1, 20, ring);
 			// DrawTextOut's outline is not traced; one pixel all round is assumed.
 			for (int dx = -1; dx <= 1; dx++) {
 				for (int dy = -1; dy <= 1; dy++) {
@@ -747,12 +731,11 @@ final class TalkBox {
 	 * DrawHeadline: a black 4/8 strip from y 55, 19 px per line and the screen wide, then the
 	 * lines in RGB(232, 232, 232) centred across from y 57 at a 17 px pitch.
 	 */
-	void drawHeadline(Graphics2D g) {
+	void drawHeadline(Gfx g) {
 		if (head == null) {
 			return;
 		}
-		g.setColor(new Color(0, 0, 0, 4 * 32));
-		g.fillRect(0, HEAD_Y, W, HEAD_LINE * headLines.size());
+		g.fillRect(0, HEAD_Y, W, HEAD_LINE * headLines.size(), (4 * 32) << 24);
 		for (int k = 0; k < headLines.size(); k++) {
 			int[] ln = headLines.get(k);
 			drawBytes(g, head, ln[0], ln[1], (W - width(head, ln[0], ln[1])) >> 1, HEAD_Y + 2 + 17 * k, 0xe8e8e800);

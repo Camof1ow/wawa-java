@@ -1,8 +1,5 @@
 package wawa;
 
-import java.awt.Graphics2D;
-import java.awt.Color;
-import java.awt.event.KeyEvent;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -929,7 +926,7 @@ final class EventRunner {
 			}
 			return true;
 		}
-		if (code == KeyEvent.VK_NUMBER_SIGN || code == KeyEvent.VK_F) {
+		if (code == Keys.NUMBER_SIGN || code == Keys.F) {
 			if (!noSkip) {
 				if (mode == 0) {
 					mode = 1;
@@ -937,7 +934,7 @@ final class EventRunner {
 						talk.skipCaption();
 					} else if (e.result == 4) {
 						// SetTalkState(state == 6 ? 0 : 1), as OK does.
-						talk.key(KeyEvent.VK_ENTER, mode, w.heroName(), w.npcName(), emotes);
+						talk.key(Keys.ENTER, mode, w.heroName(), w.npcName(), emotes);
 					}
 				} else if (mode == 1) {
 					mode = 0;
@@ -952,15 +949,14 @@ final class EventRunner {
 	}
 
 	/** DrawPhase on the 480x320 overlay (letterbox bars, then the text box), or the headline. */
-	void draw(Graphics2D g) {
+	void draw(Gfx g) {
 		if (!active()) {
 			// DrawGamePlay calls DrawHeadline only while no phase runs.
 			talk.drawHeadline(g);
 			return;
 		}
-		g.setColor(Color.BLACK);
-		g.fillRect(0, 0, TalkBox.W, 24);
-		g.fillRect(0, TalkBox.H - 24, TalkBox.W, 24);
+		g.fillRect(0, 0, TalkBox.W, 24, 0xff000000);
+		g.fillRect(0, TalkBox.H - 24, TalkBox.W, 24, 0xff000000);
 		int r = stack.get(stack.size() - 1).result;
 		talk.draw(g, mode, noSkip || r == 7 || r == 8);
 	}

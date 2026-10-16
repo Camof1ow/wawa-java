@@ -22,6 +22,7 @@ public final class FindBySize {
 
 	public static void main(String[] args) throws Exception {
 		Path assets = Path.of(args[0]);
+		DirAssets apk = new DirAssets(assets);
 		int tw = Integer.parseInt(args[1]);
 		int th = Integer.parseInt(args[2]);
 		int tol = Integer.parseInt(args[3]);
@@ -34,7 +35,7 @@ public final class FindBySize {
 			for (Path p : s.sorted().toList()) {
 				Gsac g;
 				try {
-					g = Gsac.loadCompanion(p);
+					g = Gsac.loadCompanion(apk, apk.path(p));
 				} catch (IOException e) {
 					continue;
 				}
@@ -64,7 +65,7 @@ public final class FindBySize {
 		for (int i = 0; i < hits.size(); i++) {
 			int cx = (i % cols) * cell;
 			int cy = (i / cols) * (cell + 14);
-			BufferedImage f = hits.get(i).frame(frames.get(i));
+			BufferedImage f = Awt.toBuffered(hits.get(i).frame(frames.get(i)));
 			g2.drawImage(f, cx + (cell - f.getWidth()) / 2, cy + (cell - f.getHeight()) / 2, null);
 			g2.setColor(new Color(180, 180, 180));
 			g2.drawString(names.get(i) + " f" + frames.get(i), cx + 2, cy + cell + 11);
@@ -72,7 +73,7 @@ public final class FindBySize {
 			g2.drawRect(cx, cy, cell - 1, cell - 1);
 		}
 		g2.dispose();
-		Files.write(out, Png.of(sheet));
+		Files.write(out, Awt.png(sheet));
 		System.out.println("wrote " + out);
 	}
 

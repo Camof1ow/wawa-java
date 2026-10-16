@@ -1,7 +1,6 @@
 package wawa;
 
 import java.io.IOException;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -105,7 +104,7 @@ final class HeroAnim {
 		return l;
 	}
 
-	HeroAnim(Path assets, ElfImage elf) {
+	HeroAnim(Assets assets, ElfImage elf) {
 		this.elf = elf;
 		this.sprites = new PartSprites(assets);
 	}

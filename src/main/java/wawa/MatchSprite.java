@@ -31,6 +31,7 @@ public final class MatchSprite {
 		int w = Integer.parseInt(args[3]);
 		int h = Integer.parseInt(args[4]);
 		Path assets = Path.of(args[5]);
+		DirAssets apk = new DirAssets(assets);
 		int topN = args.length > 6 ? Integer.parseInt(args[6]) : 8;
 
 		BufferedImage img = ImageIO.read(shot.toFile());
@@ -43,7 +44,7 @@ public final class MatchSprite {
 			for (Path p : s.sorted().toList()) {
 				Gsac g;
 				try {
-					g = Gsac.loadCompanion(p);
+					g = Gsac.loadCompanion(apk, apk.path(p));
 				} catch (IOException e) {
 					continue;
 				}
@@ -51,7 +52,7 @@ public final class MatchSprite {
 					continue;
 				}
 				for (int f = 0; f < g.frameCount(); f++) {
-					BufferedImage frame = g.frame(f);
+					BufferedImage frame = Awt.toBuffered(g.frame(f));
 					for (double scale : SCALES) {
 						double score = compare(probe, frame, scale);
 						if (score >= 0) {

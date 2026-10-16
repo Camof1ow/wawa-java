@@ -48,6 +48,7 @@ Screenshots and measurements in these notes come from running the original in an
 ## Requirements
 
 - JDK 17 or newer (the port uses records and switch expressions; the browser build targets 17).
+  The browser build uses the bundled Gradle wrapper (8.14), which needs JAVA_HOME on a JDK 17–24.
 - The original `wild.apk`: a copy sits in `web/wild.apk` for the browser build. `wawa.Game` reads
   it in place (assets and `lib/armeabi/libwawa.so`); the tools take an extracted `assets/`
   directory, with `lib/armeabi/libwawa.so` next to it.
@@ -55,7 +56,8 @@ Screenshots and measurements in these notes come from running the original in an
 ## Build and run
 
 ```bash
-javac -d out $(find src -name '*.java')
+javac -encoding UTF-8 -d out $(find src -name '*.java')
+cp -r src/main/resources/* out/    # the text font
 
 # playable slice, straight from the APK or from an extracted assets/ directory
 java -cp out wawa.Game web/wild.apk
@@ -74,12 +76,26 @@ so the render can be checked without a GUI.
 
 ## Play in the browser
 
-GitHub Pages serves `web/index.html`, `web/wild.apk` and `wawa.jar` (`.github/workflows/pages.yml`
-builds the jar on every push to `main`). The page starts the jar in CheerpJ 4.3 (Java 17, Community
-Edition: personal and non-business use only), and Java opens the APK in place over HTTP range
-reads. Saves go to the browser's `/files/` store. To try it locally, serve a folder holding those
-three files with a server that answers `Range` requests (CheerpJ needs them), e.g.
-`npx http-server`.
+GitHub Pages serves `web/index.html`, `web/wild.apk` and `wawa.js` (`.github/workflows/pages.yml`
+builds it on every push to `main`). `wawa.js` is the game compiled ahead of time to JavaScript by
+TeaVM 0.14.1 from `wawa.WebMain` (`web/src`, the only source that needs TeaVM's browser API) and
+everything it reaches; desktop-only classes (Swing, ImageIO, the tools) are not translated. The page
+downloads the APK, unpacks `assets/` and `libwawa.so` in memory and draws onto a 416×312 canvas
+scaled to the window. Saves go to the browser's localStorage (`wawa-*` keys).
+
+Text is not drawn into the game's pixels: `Gfx` records each character in the cell the original's
+bitmap font would use, and the screen draws it at display resolution with GalmuriMono11 (by Lee
+Minseo, SIL Open Font License 1.1, `src/main/resources/wawa/Galmuri-LICENSE.txt`), subset to KS X 1001
+Hangul, symbols and ASCII. The original's 480×320 screens are scaled to the canvas, and their bitmap
+glyphs did not survive that.
+
+To try it locally:
+
+```bash
+sh ./gradlew generateJavaScript
+cp build/generated/teavm/js/wawa.js src/main/resources/wawa/GalmuriMono11.ttf web/
+npx http-server web    # or any static server; opening index.html as file:// cannot fetch the APK
+```
 
 ## Layout
 
@@ -94,7 +110,7 @@ three files with a server that answers `Range` requests (CheerpJ needs them), e.
 | `src/main/java/wawa/{Hero,Item,Combat}.java` | hero record, item tables, hit resolution |
 | `src/main/java/wawa/{Gsac,RenderAtlas,ElfImage,ResourceFile}.java` | asset decoding |
 | `src/main/java/wawa/{CheckMaps,CheckMapsRun,ExtractAll,MatchSprite,FindBySize}.java` | tools |
-| `web/index.html`, `.github/workflows/pages.yml` | browser launcher (CheerpJ) and the Pages build |
+| `web/index.html`, `web/src/wawa/WebMain.java`, `build.gradle.kts`, `.github/workflows/pages.yml` | browser page, its TeaVM entry point, the TeaVM build and the Pages workflow |
 | `docs/FORMATS.md` | every asset format, with the function that proves it |
 | `docs/ORIGINAL-VM.md` | how to run the original locally, including the Dalvik patch it needs |
 | `PORT-BREAKDOWN.md` | what the APK is made of and the porting order |

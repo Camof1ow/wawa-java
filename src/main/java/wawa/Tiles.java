@@ -1,8 +1,6 @@
 package wawa;
 
-import java.awt.image.BufferedImage;
 import java.io.IOException;
-import java.nio.file.Path;
 
 /**
  * The four ground atlases one map draws from.
@@ -20,7 +18,7 @@ public final class Tiles {
 		System.arraycopy(loaded, 0, layers, 0, 4);
 	}
 
-	public static Tiles load(Path assets, MapData map) {
+	static Tiles load(Assets assets, MapData map) {
 		TileAtlas[] loaded = new TileAtlas[4];
 		for (int layer = 0; layer < 4; layer++) {
 			int id = map.layerTileSet[layer];
@@ -37,7 +35,7 @@ public final class Tiles {
 	}
 
 	/** The patch for a cell byte, or null when the layer is missing or the cell is empty. */
-	public BufferedImage patch(int layer, int cell) {
+	Img patch(int layer, int cell) {
 		TileAtlas atlas = layers[layer];
 		return atlas == null ? null : atlas.patch(cell);
 	}

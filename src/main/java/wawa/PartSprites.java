@@ -1,10 +1,6 @@
 package wawa;
 
-import java.awt.Graphics2D;
-import java.awt.image.BufferedImage;
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -35,24 +31,24 @@ final class PartSprites {
 	}
 
 	/** The image of one pose and where the owner's own position falls inside it. */
-	record Pose(BufferedImage image, int anchorX, int anchorY) {
+	record Pose(Img image, int anchorX, int anchorY) {
 	}
 
 	record Dat(int[][] chain, int[] refs, int[][] parts) {
 	}
 
-	private final Path assets;
+	private final Assets assets;
 	private final Map<Integer, Dat> dats = new HashMap<>();
 	private final Map<Integer, Gsac> archives = new HashMap<>();
 
-	PartSprites(Path assets) {
+	PartSprites(Assets assets) {
 		this.assets = assets;
 	}
 
 	Dat dat(int number) throws IOException {
 		Dat d = dats.get(number);
 		if (d == null) {
-			d = parse(Files.readAllBytes(assets.resolve("dat").resolve(String.format("%02d.png", number))));
+			d = parse(assets.read(String.format("assets/dat/%02d.png", number)));
 			dats.put(number, d);
 		}
 		return d;
@@ -63,40 +59,43 @@ final class PartSprites {
 	 * hero's +0x1a flag: DrawHeroAnim then places a part at {@code x - dx - width} and flips it.
 	 */
 	Pose compose(List<Part> parts, boolean mirror) throws IOException {
-		List<BufferedImage> images = new ArrayList<>();
+		List<Img> images = new ArrayList<>();
 		List<int[]> at = new ArrayList<>();
 		int minX = Integer.MAX_VALUE;
 		int minY = Integer.MAX_VALUE;
 		int maxX = Integer.MIN_VALUE;
 		int maxY = Integer.MIN_VALUE;
 		for (Part p : parts) {
-			BufferedImage img = frame(p.slot(), p.frame(), p.row());
+			Img img = frame(p.slot(), p.frame(), p.row());
 			if (img == null) {
 				continue;
 			}
 			int flip = mirror ? p.flip() ^ 1 : p.flip();
-			int x = mirror ? -p.dx() - img.getWidth() : p.dx();
-			images.add(flip(img, flip));
-			at.add(new int[] {x, p.dy()});
+			int x = mirror ? -p.dx() - img.w : p.dx();
+			images.add(img);
+			at.add(new int[] {x, p.dy(), flip});
 			minX = Math.min(minX, x);
 			minY = Math.min(minY, p.dy());
-			maxX = Math.max(maxX, x + img.getWidth());
-			maxY = Math.max(maxY, p.dy() + img.getHeight());
+			maxX = Math.max(maxX, x + img.w);
+			maxY = Math.max(maxY, p.dy() + img.h);
 		}
 		if (images.isEmpty()) {
 			return null;
 		}
-		BufferedImage out = new BufferedImage(maxX - minX, maxY - minY, BufferedImage.TYPE_INT_ARGB);
-		Graphics2D g = out.createGraphics();
+		Img out = new Img(maxX - minX, maxY - minY);
+		Gfx g = new Gfx(out);
 		for (int i = 0; i < images.size(); i++) {
-			g.drawImage(images.get(i), at.get(i)[0] - minX, at.get(i)[1] - minY, null);
+			Img img = images.get(i);
+			int[] a = at.get(i);
+			// Flip bit 0 mirrors left-right, bit 1 top-bottom.
+			g.drawImage(img, a[0] - minX, a[1] - minY, (a[2] & 1) != 0 ? -img.w : img.w,
+					(a[2] & 2) != 0 ? -img.h : img.h);
 		}
-		g.dispose();
 		return new Pose(out, -minX, -minY);
 	}
 
 	/** A frame of a slot, continuing into the following slots when the index runs past the end. */
-	BufferedImage frame(int slot, int frame, int row) throws IOException {
+	Img frame(int slot, int frame, int row) throws IOException {
 		while (true) {
 			Gsac g = archive(slot);
 			if (g == null || !g.fullyDecodable()) {
@@ -115,8 +114,8 @@ final class PartSprites {
 
 	private Gsac archive(int slot) throws IOException {
 		if (!archives.containsKey(slot)) {
-			Path file = assets.resolve("img").resolve(String.format("%03d.png", slot));
-			archives.put(slot, Files.exists(file) ? Gsac.loadCompanion(file) : null);
+			String file = String.format("assets/img/%03d.png", slot);
+			archives.put(slot, assets.exists(file) ? Gsac.loadCompanion(assets, file) : null);
 		}
 		return archives.get(slot);
 	}
@@ -139,23 +138,6 @@ final class PartSprites {
 			parts[i] = new int[] {u32(b, at), u32(b, at + 4)};
 		}
 		return new Dat(chain, refs, parts);
-	}
-
-	private static BufferedImage flip(BufferedImage img, int flip) {
-		if (flip == 0) {
-			return img;
-		}
-		int w = img.getWidth();
-		int h = img.getHeight();
-		BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
-		for (int y = 0; y < h; y++) {
-			for (int x = 0; x < w; x++) {
-				int sx = (flip & 1) != 0 ? w - 1 - x : x;
-				int sy = (flip & 2) != 0 ? h - 1 - y : y;
-				out.setRGB(x, y, img.getRGB(sx, sy));
-			}
-		}
-		return out;
 	}
 
 	private static int u16(byte[] b, int at) {

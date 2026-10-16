@@ -2,8 +2,6 @@ package wawa;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 
 /**
  * Area metadata from assets/eng/mob&#47;*.png, the second ReadMapFile call in LoadGameMap
@@ -58,8 +56,8 @@ public final class AreaInfo {
 		return (weatherBits & 1) != 0 || (weatherBits & 2) != 0 || (weatherBits & 4) != 0;
 	}
 
-	public static AreaInfo load(Path file, String code) throws IOException {
-		byte[] blob = ResourceFile.pick(file, code);
+	static AreaInfo load(Assets assets, String file, String code) throws IOException {
+		byte[] blob = ResourceFile.pick(assets, file, code);
 		if (blob.length < 9) {
 			throw new IOException("area blob too small: " + file);
 		}

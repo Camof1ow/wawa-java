@@ -1,7 +1,6 @@
 package wawa;
 
 import java.io.IOException;
-import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -16,22 +15,13 @@ public final class MonsterSprite {
 	private final Map<Integer, PartSprites.Pose> byKind = new HashMap<>();
 	private final Map<Long, PartSprites.Pose> poses = new HashMap<>();
 
-	private MonsterSprite(Path assets, MonsterData kinds) {
+	private MonsterSprite(Assets assets, MonsterData kinds) {
 		this.kinds = kinds;
 		this.anim = new MonsterAnim(assets, kinds);
 	}
 
-	/** The libraries sit beside the assets directory in the APK, not inside it. */
-	public static Path nativeLib(Path assets) {
-		return assets.toAbsolutePath().getParent().resolve("lib/armeabi/libwawa.so");
-	}
-
-	public static MonsterSprite load(Path assets) throws IOException {
-		return load(assets, nativeLib(assets));
-	}
-
-	public static MonsterSprite load(Path assets, Path nativeLib) throws IOException {
-		return new MonsterSprite(assets, MonsterData.load(nativeLib));
+	static MonsterSprite load(Assets assets, ElfImage so) {
+		return new MonsterSprite(assets, MonsterData.load(so));
 	}
 
 	/** The standing pose for a monster id, or null when none of its parts can be decoded. */

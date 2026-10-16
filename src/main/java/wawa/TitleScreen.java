@@ -1,12 +1,6 @@
 package wawa;
 
-import java.awt.Color;
-import java.awt.Font;
-import java.awt.Graphics2D;
-import java.awt.event.KeyEvent;
-import java.awt.image.BufferedImage;
 import java.io.IOException;
-import java.nio.file.Path;
 
 /**
  * The opening: DrawLogo's three logo screens, then DrawTitle and its Play / Options / Help menu.
@@ -39,18 +33,18 @@ final class TitleScreen {
 	private static final int[][] ITEM_XY = { { 0xe6, 0x71, 0xd0, 0x6c }, { 0xdc, 0x92, 0xbb, 0x8f },
 		{ 0xe5, 0xb5, 0xce, 0xb2 } };
 
-	private final BufferedImage[] logos = new BufferedImage[4];
-	private final BufferedImage background;
-	private final BufferedImage title;
-	private final BufferedImage touch;
-	private final BufferedImage deco;
-	private final BufferedImage[][] items = new BufferedImage[3][2];
+	private final Img[] logos = new Img[4];
+	private final Img background;
+	private final Img title;
+	private final Img touch;
+	private final Img deco;
+	private final Img[][] items = new Img[3][2];
 	private int logoFrame;
 	private int blink;
 	/** 0 while the menu is closed, else the chosen item 1..3 (KeyPressTitle's counter). */
 	private int menu;
 
-	TitleScreen(Path assets) throws IOException {
+	TitleScreen(Assets assets) throws IOException {
 		for (int i = 0; i < logos.length; i++) {
 			logos[i] = image(assets, "img/logo_0" + (i + 1) + ".png");
 		}
@@ -65,8 +59,8 @@ final class TitleScreen {
 		}
 	}
 
-	private static BufferedImage image(Path assets, String name) throws IOException {
-		return ResourceFile.image(assets.resolve(name));
+	private static Img image(Assets assets, String name) throws IOException {
+		return ResourceFile.image(assets, "assets/" + name);
 	}
 
 	/** True when Play was chosen and the slot screen should take over. */
@@ -79,10 +73,10 @@ final class TitleScreen {
 			return false;
 		}
 		switch (code) {
-			case KeyEvent.VK_UP -> menu = menu == 1 ? 3 : menu - 1;
-			case KeyEvent.VK_DOWN -> menu = menu == 3 ? 1 : menu + 1;
+			case Keys.UP -> menu = menu == 1 ? 3 : menu - 1;
+			case Keys.DOWN -> menu = menu == 3 ? 1 : menu + 1;
 			// ponytail: Options and Help open GMenus that are not ported; picking them does nothing.
-			case KeyEvent.VK_ENTER, KeyEvent.VK_SPACE -> {
+			case Keys.ENTER, Keys.SPACE -> {
 				return menu == 1;
 			}
 			default -> {
@@ -91,55 +85,50 @@ final class TitleScreen {
 		return false;
 	}
 
-	BufferedImage render() {
-		BufferedImage img = new BufferedImage(W, H, BufferedImage.TYPE_INT_RGB);
-		Graphics2D g = img.createGraphics();
+	Img render() {
+		Img img = new Img(W, H);
+		Gfx g = new Gfx(img);
+		g.fillRect(0, 0, W, H, 0xff000000);
 		if (logoFrame < LOGO_END) {
 			drawLogo(g);
 			logoFrame++;
 		} else {
 			drawTitle(g);
 		}
-		g.dispose();
 		return img;
 	}
 
-	private void drawLogo(Graphics2D g) {
-		g.setColor(Color.WHITE);
-		g.fillRect(0, 0, W, H);
+	private void drawLogo(Gfx g) {
+		g.fillRect(0, 0, W, H, 0xffffffff);
 		if (logoFrame < 25) {
-			g.drawImage(logos[0], (W - 0x82) / 2, (H - 0xaa) / 2, null);
+			g.drawImage(logos[0], (W - 0x82) / 2, (H - 0xaa) / 2);
 		} else if (logoFrame < 50) {
-			g.drawImage(logos[1], (W - 0xc0) / 2, (H - 0x38) / 2, null);
+			g.drawImage(logos[1], (W - 0xc0) / 2, (H - 0x38) / 2);
 		} else {
-			g.drawImage(logos[2], (W - 0x15e) / 2, (H - 0x22) / 2, null);
-			g.drawImage(logos[3], W - 0x96, 0, null);
+			g.drawImage(logos[2], (W - 0x15e) / 2, (H - 0x22) / 2);
+			g.drawImage(logos[3], W - 0x96, 0);
 		}
 	}
 
-	private void drawTitle(Graphics2D g) {
-		g.drawImage(background, TITLE_X, 0, null);
+	private void drawTitle(Gfx g) {
+		g.drawImage(background, TITLE_X, 0);
 		if (menu == 0) {
-			g.drawImage(title, TITLE_X, 0, null);
+			g.drawImage(title, TITLE_X, 0);
 			if ((blink++ / 6 & 1) == 0) {
-				g.drawImage(touch, TITLE_X + 0xba, 0x104, null);
+				g.drawImage(touch, TITLE_X + 0xba, 0x104);
 			}
 		} else {
 			// DrawFillAlpha levels 1..7 go through a jump table; level / 8 black is inferred.
-			g.setColor(new Color(0, 0, 0, 2 * 32));
-			g.fillRect(0, 70, W, 0xaa);
-			g.setColor(new Color(0, 0, 0, 5 * 32));
-			g.fillRect(0, 75, W, 0xa0);
+			g.fillRect(0, 70, W, 0xaa, (2 * 32) << 24);
+			g.fillRect(0, 75, W, 0xa0, (5 * 32) << 24);
 			int x = (W - 480) / 2;
-			g.drawImage(deco, x + 0x82, 0x4f, null);
-			g.drawImage(deco, x + 0x82, 0xe0, null);
+			g.drawImage(deco, x + 0x82, 0x4f);
+			g.drawImage(deco, x + 0x82, 0xe0);
 			for (int i = 0; i < items.length; i++) {
 				boolean chosen = i == menu - 1;
-				g.drawImage(items[i][chosen ? 1 : 0], x + ITEM_XY[i][chosen ? 2 : 0], ITEM_XY[i][chosen ? 3 : 1], null);
+				g.drawImage(items[i][chosen ? 1 : 0], x + ITEM_XY[i][chosen ? 2 : 0], ITEM_XY[i][chosen ? 3 : 1]);
 			}
 		}
-		g.setFont(new Font("SansSerif", Font.PLAIN, 11));
-		g.setColor(Color.WHITE);
-		g.drawString("Ver. 1.0.0", TITLE_X + 2, 2 + g.getFontMetrics().getAscent());
+		g.drawString("Ver. 1.0.0", TITLE_X + 2, 2, 0xffffffff);
 	}
 }

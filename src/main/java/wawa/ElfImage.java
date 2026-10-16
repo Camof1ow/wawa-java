@@ -1,9 +1,6 @@
 package wawa;
 
 import java.io.IOException;
-import java.nio.charset.Charset;
-import java.nio.file.Files;
-import java.nio.file.Path;
 
 /**
  * Read-only access to a 32-bit little-endian ELF by virtual address.
@@ -13,6 +10,9 @@ import java.nio.file.Path;
  * constant cannot translate them. The program headers are parsed instead.
  */
 final class ElfImage {
+
+	/** Where the native library sits in the APK. */
+	static final String SO = "lib/armeabi/libwawa.so";
 
 	private final byte[] bytes;
 	/** {p_vaddr, p_offset, p_filesz} for each PT_LOAD. */
@@ -27,8 +27,8 @@ final class ElfImage {
 		this.segments = readSegments(bytes);
 	}
 
-	static ElfImage read(Path file) throws IOException {
-		return new ElfImage(Files.readAllBytes(file));
+	static ElfImage read(Assets assets) throws IOException {
+		return new ElfImage(assets.read(SO));
 	}
 
 	int u8(int vaddr) {
@@ -58,8 +58,14 @@ final class ElfImage {
 				| ((bytes[at + 3] & 0xFF) << 24);
 	}
 
-	/** The NUL-terminated string at a virtual address, or null when it is not mapped. */
-	String cstring(int vaddr, Charset charset) {
+	/** The NUL-terminated EUC-KR string at a virtual address, or null when it is unmapped or empty. */
+	String cstring(int vaddr) {
+		byte[] b = cbytes(vaddr);
+		return b == null || b.length == 0 ? null : Ksc.decode(b, 0, b.length);
+	}
+
+	/** The bytes of the NUL-terminated string at a virtual address, or null when it is not mapped. */
+	byte[] cbytes(int vaddr) {
 		int at = fileOffset(vaddr);
 		if (at < 0) {
 			return null;
@@ -68,8 +74,16 @@ final class ElfImage {
 		while (end < bytes.length && bytes[end] != 0) {
 			end++;
 		}
-		String s = new String(bytes, at, end - at, charset);
-		return s.isEmpty() ? null : s;
+		return java.util.Arrays.copyOfRange(bytes, at, end);
+	}
+
+	/** {@code n} bytes from a virtual address; bytes past the end of the file read as 0. */
+	byte[] bytes(int vaddr, int n) {
+		int at = fileOffset(vaddr);
+		if (at < 0) {
+			throw new IllegalArgumentException("unmapped address 0x" + Integer.toHexString(vaddr));
+		}
+		return java.util.Arrays.copyOfRange(bytes, at, at + n);
 	}
 
 	/** Virtual address to file offset, or -1 when it falls outside every loaded segment. */

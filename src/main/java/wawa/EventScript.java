@@ -1,8 +1,6 @@
 package wawa;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 
 /**
  * Event script ("phase") data as LoadGameMap / LoadGlobalData hold it, with the byte length rules
@@ -70,17 +68,17 @@ final class EventScript {
 	static final Table EMPTY = new Table(new byte[0]);
 
 	/** The map's local_event table from eve/&lt;letter&gt;.evk, or an empty table when it has none. */
-	static Table map(Path assets, String code) {
+	static Table map(Assets assets, String code) {
 		try {
-			return new Table(ResourceFile.pick(assets.resolve("eve/" + code.charAt(0) + ".png"), code));
+			return new Table(ResourceFile.pick(assets, "assets/eve/" + code.charAt(0) + ".png", code));
 		} catch (IOException e) {
 			return EMPTY;
 		}
 	}
 
 	/** globl_event: dat/event.dat, read whole (ReadMapFile type 3). */
-	static Table global(Path assets) throws IOException {
-		return new Table(Files.readAllBytes(assets.resolve("dat/event.png")));
+	static Table global(Assets assets) throws IOException {
+		return new Table(assets.read("assets/dat/event.png"));
 	}
 
 	/** GetEventLen's ref: the event whose phase this header borrows, or -1. */

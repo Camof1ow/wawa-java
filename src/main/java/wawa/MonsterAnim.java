@@ -1,7 +1,6 @@
 package wawa;
 
 import java.io.IOException;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -31,7 +30,7 @@ public final class MonsterAnim {
 	private final MonsterData data;
 	private final PartSprites sprites;
 
-	public MonsterAnim(Path assets, MonsterData data) {
+	MonsterAnim(Assets assets, MonsterData data) {
 		this.data = data;
 		this.sprites = new PartSprites(assets);
 	}

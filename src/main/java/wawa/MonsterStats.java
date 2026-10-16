@@ -1,8 +1,5 @@
 package wawa;
 
-import java.io.IOException;
-import java.nio.file.Path;
-
 /**
  * The per-monster stat tables libwawa.so keeps as read-only data, combined the way
  * InitMonsAbility fills a monster record. It only runs for ids below 0xa6, which is exactly how
@@ -53,8 +50,8 @@ public final class MonsterStats {
 		this.elf = elf;
 	}
 
-	public static MonsterStats load(Path so) throws IOException {
-		return new MonsterStats(ElfImage.read(so));
+	static MonsterStats load(ElfImage so) {
+		return new MonsterStats(so);
 	}
 
 	/** False when InitMonsAbility would not run for this id, i.e. the tables have no row. */

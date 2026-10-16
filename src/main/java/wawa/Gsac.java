@@ -1,9 +1,6 @@
 package wawa;
 
-import java.awt.image.BufferedImage;
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 
 /**
  * GSAC sprite archive from wild.apk (lib/armeabi/libwawa.so, InitSprite).
@@ -27,7 +24,8 @@ public final class Gsac {
 	private final int[] frameWidth;
 	private final int[] frameHeight;
 	private byte[] palette;
-	private byte[] cached;
+	/** The archive bytes, read once; every frame decode reuses them. */
+	private final byte[] data;
 	/** Rows and row length of an external palette; a single row otherwise. */
 	private int paletteRowCount = 1;
 	private int paletteRowLength;
@@ -43,24 +41,12 @@ public final class Gsac {
 		return rawH;
 	}
 	private final int pixelOffset;
-	private final Path source;
+	private final String source;
 
-	/** The archive bytes are read once; every frame decode reuses them. */
-	private byte[] bytes() {
-		if (cached == null) {
-			try {
-				cached = Files.readAllBytes(source);
-			} catch (IOException e) {
-				throw new IllegalStateException(e);
-			}
-		}
-		return cached;
-	}
-
-
-	private Gsac(Path source, int paletteRows, int paletteCols, int flags,
+	private Gsac(String source, byte[] data, int paletteRows, int paletteCols, int flags,
 			int[] frameWidth, int[] frameHeight, byte[] palette, int pixelOffset) {
 		this.source = source;
+		this.data = data;
 		this.paletteRows = paletteRows;
 		this.paletteCols = paletteCols;
 		this.flags = flags;
@@ -133,16 +119,13 @@ public final class Gsac {
 	}
 
 	/** Decodes the single raw image of a frame-count-0 archive; width comes from the caller. */
-	public BufferedImage rawImage(int width) {
-		byte[] data = bytes();
+	Img rawImage(int width) {
 		int at = 0x14 + palette.length;
 		int h = width > 0 ? (data.length - at) / width : 0;
-		BufferedImage img = new BufferedImage(width, h, BufferedImage.TYPE_INT_ARGB);
-		for (int y = 0; y < h; y++) {
-			for (int x = 0; x < width; x++) {
-				int idx = data[at + y * width + x] & 0xFF;
-				img.setRGB(x, y, idx == KEY_INDEX ? 0 : argb(idx));
-			}
+		Img img = new Img(width, h);
+		for (int i = 0; i < width * h; i++) {
+			int idx = data[at + i] & 0xFF;
+			img.px[i] = idx == KEY_INDEX ? 0 : argb(idx);
 		}
 		return img;
 	}
@@ -153,7 +136,7 @@ public final class Gsac {
 	}
 
 	/** Decodes one frame to ARGB with the first palette row; magenta decodes as transparent. */
-	public BufferedImage frame(int index) {
+	Img frame(int index) {
 		return frame(index, 0);
 	}
 
@@ -163,31 +146,28 @@ public final class Gsac {
 	 * LoadSpritePal reads them; DrawSpriteFull's palette argument picks the row. A row past the end
 	 * falls back to the first.
 	 */
-	public BufferedImage frame(int index, int row) {
+	Img frame(int index, int row) {
 		if (!fullyDecodable()) {
 			throw new IllegalStateException(source + " mode " + mode() + " not supported yet");
 		}
-		byte[] data = bytes();
 		int w = frameWidth[index];
 		int h = frameHeight[index];
 		byte[] pixels;
+		int at = 0;
 		if (mode() == MODE_8BPP) {
-			int at = pixelOffset;
+			pixels = data;
+			at = pixelOffset;
 			for (int i = 0; i < index; i++) {
 				at += frameWidth[i] * frameHeight[i];
 			}
-			pixels = new byte[w * h];
-			System.arraycopy(data, at, pixels, 0, w * h);
 		} else {
 			pixels = decodeRle(data, index);
 		}
 		int base = row > 0 && row < paletteRowCount ? row * paletteRowLength : 0;
-		BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
-		for (int y = 0; y < h; y++) {
-			for (int x = 0; x < w; x++) {
-				int idx = pixels[y * w + x] & 0xFF;
-				img.setRGB(x, y, idx == KEY_INDEX ? 0 : argb(base + idx));
-			}
+		Img img = new Img(w, h);
+		for (int i = 0; i < w * h; i++) {
+			int idx = pixels[at + i] & 0xFF;
+			img.px[i] = idx == KEY_INDEX ? 0 : argb(base + idx);
 		}
 		return img;
 	}
@@ -209,10 +189,10 @@ public final class Gsac {
 	 * tile00..13 sheet — and each one has exactly that companion file, which is what the engine's
 	 * LoadSpritePal reads (visible in its getResource log lines).
 	 */
-	public static Gsac load(Path file, Path paletteFile) throws IOException {
-		Gsac g = load(file);
-		if (g.palette.length == 0 && paletteFile != null && Files.exists(paletteFile)) {
-			byte[] raw = Files.readAllBytes(paletteFile);
+	static Gsac load(Assets assets, String file, String paletteFile) throws IOException {
+		Gsac g = load(assets, file);
+		if (g.palette.length == 0 && paletteFile != null && assets.exists(paletteFile)) {
+			byte[] raw = assets.read(paletteFile);
 			g.palette = externalPalette(raw);
 			if (raw.length >= 2) {
 				g.paletteRowCount = raw[raw.length - 2] & 0xFF;
@@ -230,14 +210,15 @@ public final class Gsac {
 		return out;
 	}
 
-	/** Loads img/&lt;name&gt;.png, taking its palette from the sibling pal/ directory when it has none. */
-	public static Gsac loadCompanion(Path imgFile) throws IOException {
-		Path pal = imgFile.getParent().getParent().resolve("pal").resolve(imgFile.getFileName());
-		return load(imgFile, pal);
+	/** Loads .../img/&lt;name&gt;.png, taking its palette from the sibling pal/ directory when it has none. */
+	static Gsac loadCompanion(Assets assets, String imgFile) throws IOException {
+		int name = imgFile.lastIndexOf('/');
+		int dir = imgFile.lastIndexOf('/', name - 1);
+		return load(assets, imgFile, imgFile.substring(0, dir + 1) + "pal" + imgFile.substring(name));
 	}
 
-	public static Gsac load(Path file) throws IOException {
-		byte[] d = Files.readAllBytes(file);
+	static Gsac load(Assets assets, String file) throws IOException {
+		byte[] d = assets.read(file);
 		if (d.length < 0x14 || d[0] != 'G' || d[1] != 'S' || d[2] != 'A' || d[3] != 'C') {
 			throw new IOException("not a GSAC archive: " + file);
 		}
@@ -264,10 +245,9 @@ public final class Gsac {
 		}
 		byte[] palette = new byte[paletteRows * paletteCols * 3];
 		System.arraycopy(d, 0x14 + frames * 4, palette, 0, palette.length);
-		Gsac g = new Gsac(file, paletteRows, paletteCols, flags, fw, fh, palette, pixelOffset);
+		Gsac g = new Gsac(file, d, paletteRows, paletteCols, flags, fw, fh, palette, pixelOffset);
 		g.rawW = rawW;
 		g.rawH = rawH;
-		g.cached = d;
 		return g;
 	}
 

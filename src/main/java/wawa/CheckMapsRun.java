@@ -9,19 +9,20 @@ import java.nio.file.Path;
 public final class CheckMapsRun {
 
 	public static void main(String[] args) throws Exception {
-		Path assets = Path.of(args.length > 0 ? args[0] : "assets");
+		DirAssets assets = new DirAssets(Path.of(args.length > 0 ? args[0] : "assets"));
 		String[] codes = { "a01", "b01", "c01", "e01", "f01", "g01", "h01", "i01", "j01", "n01",
 				"t01", "z01" };
-		MonsterSprite sprites = MonsterSprite.load(assets);
-		MonsterStats stats = MonsterStats.load(MonsterSprite.nativeLib(assets));
+		ElfImage so = ElfImage.read(assets);
+		MonsterSprite sprites = MonsterSprite.load(assets, so);
+		MonsterStats stats = MonsterStats.load(so);
 		int failures = 0;
 		for (String c : codes) {
 			String letter = c.substring(0, 1);
 			try {
-				MapData m = MapData.load(assets.resolve("eng/map/" + letter + ".png"), c);
+				MapData m = MapData.load(assets, "assets/eng/map/" + letter + ".png", c);
 				AreaInfo a;
 				try {
-					a = AreaInfo.load(assets.resolve("eng/mob/" + letter + ".png"), c);
+					a = AreaInfo.load(assets, "assets/eng/mob/" + letter + ".png", c);
 				} catch (java.io.IOException e) {
 					a = AreaInfo.absent(c);
 				}
@@ -32,7 +33,7 @@ public final class CheckMapsRun {
 				}
 				MonsterTable mobs;
 				try {
-					mobs = MonsterTable.load(assets.resolve("eng/mob/" + letter + ".png"), c,
+					mobs = MonsterTable.load(assets, "assets/eng/mob/" + letter + ".png", c,
 							m.width, m.height);
 				} catch (java.io.IOException e) {
 					mobs = MonsterTable.empty(c);

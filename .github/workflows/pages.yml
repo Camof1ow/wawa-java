@@ -23,13 +23,14 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      # CheerpJ runs Java 17 at most, so the jar is compiled for 17.
-      - name: wawa.jar
+          cache: gradle
+      # TeaVM translates wawa.WebMain and what it reaches to build/generated/teavm/js/wawa.js.
+      - name: wawa.js
         run: |
-          javac --release 17 -encoding UTF-8 -d build/classes $(find src -name '*.java')
+          sh ./gradlew generateJavaScript
           mkdir -p build/site
-          jar --create --file build/site/wawa.jar --main-class wawa.Game -C build/classes .
-          cp web/index.html web/wild.apk build/site/
+          cp build/generated/teavm/js/wawa.js web/index.html web/wild.apk build/site/
+          cp src/main/resources/wawa/GalmuriMono11.ttf src/main/resources/wawa/Galmuri-LICENSE.txt build/site/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

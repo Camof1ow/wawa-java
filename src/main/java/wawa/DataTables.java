@@ -1,8 +1,6 @@
 package wawa;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -32,8 +30,8 @@ public final class DataTables {
 		return records.isEmpty() ? 0 : records.get(0).length;
 	}
 
-	public static DataTables load(Path file) throws IOException {
-		byte[] d = Files.readAllBytes(file);
+	static DataTables load(Assets assets, String file) throws IOException {
+		byte[] d = assets.read(file);
 		if (d.length < 2) {
 			throw new IOException("truncated data file: " + file);
 		}
@@ -61,6 +59,6 @@ public final class DataTables {
 			}
 			recs.add(row);
 		}
-		return new DataTables(file.getFileName().toString(), declared, recs);
+		return new DataTables(file.substring(file.lastIndexOf('/') + 1), declared, recs);
 	}
 }

@@ -1,6 +1,5 @@
 package wawa;
 
-import java.awt.image.BufferedImage;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -17,18 +16,18 @@ import java.util.List;
 public final class ExportFrames {
 
 	public static void main(String[] args) throws Exception {
-		Path assets = Path.of(args[0]).resolve("img");
+		DirAssets apk = new DirAssets(Path.of(args[0]));
 		Path out = Path.of(args[1]);
 		Files.createDirectories(out);
 		int written = 0;
 		for (int a = 2; a < args.length; a++) {
 			String name = args[a];
-			Path src = assets.resolve(name + ".png");
-			if (!Files.exists(src)) {
+			String src = "assets/img/" + name + ".png";
+			if (!apk.exists(src)) {
 				System.out.println("missing " + src);
 				continue;
 			}
-			Gsac g = Gsac.loadCompanion(src);
+			Gsac g = Gsac.loadCompanion(apk, src);
 			if (!g.fullyDecodable() || g.frameCount() == 0) {
 				System.out.println("skipping " + name + " mode=" + g.mode());
 				continue;
@@ -40,7 +39,7 @@ public final class ExportFrames {
 				}
 			}
 			for (int f : keep) {
-				Files.write(out.resolve(name + "_" + f + ".png"), Png.of(g.frame(f)));
+				Files.write(out.resolve(name + "_" + f + ".png"), Awt.png(g.frame(f)));
 				written++;
 			}
 			System.out.printf("%s: %d/%d frames kept%n", name, keep.size(), g.frameCount());
@@ -49,12 +48,10 @@ public final class ExportFrames {
 	}
 
 	/** False when every pixel of the frame is transparent. */
-	private static boolean hasPixels(BufferedImage img) {
-		for (int y = 0; y < img.getHeight(); y++) {
-			for (int x = 0; x < img.getWidth(); x++) {
-				if ((img.getRGB(x, y) >>> 24) != 0) {
-					return true;
-				}
+	private static boolean hasPixels(Img img) {
+		for (int p : img.px) {
+			if ((p >>> 24) != 0) {
+				return true;
 			}
 		}
 		return false;
