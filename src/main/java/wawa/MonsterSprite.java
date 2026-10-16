@@ -27,7 +27,7 @@ public final class MonsterSprite {
 
 	private final Path assets;
 	private final MonsterData kinds;
-	private final Map<Integer, BufferedImage> bySlot = new HashMap<>();
+	private final Map<Long, BufferedImage> bySlot = new HashMap<>();
 
 	private MonsterSprite(Path assets, MonsterData kinds) {
 		this.assets = assets;
@@ -50,11 +50,13 @@ public final class MonsterSprite {
 	/** The standing pose for a monster id, or null when its archive cannot be decoded. */
 	public BufferedImage standing(int monsterId) {
 		int slot = kinds.sprite(monsterId);
-		if (bySlot.containsKey(slot)) {
-			return bySlot.get(slot);
+		int row = Math.max(0, kinds.palette(monsterId));
+		long key = ((long) slot << 32) | (row & 0xffffffffL);
+		if (bySlot.containsKey(key)) {
+			return bySlot.get(key);
 		}
-		BufferedImage img = decode(slot);
-		bySlot.put(slot, img);
+		BufferedImage img = decode(slot, row);
+		bySlot.put(key, img);
 		return img;
 	}
 
@@ -67,7 +69,7 @@ public final class MonsterSprite {
 		return kinds.name(monsterId);
 	}
 
-	private BufferedImage decode(int slot) {
+	private BufferedImage decode(int slot, int paletteRow) {
 		String name = String.format("%03d", slot);
 		Gsac g;
 		try {
@@ -79,6 +81,9 @@ public final class MonsterSprite {
 		if (!g.fullyDecodable() || g.frameCount() == 0) {
 			return null;
 		}
+		// LoadSpritePal picks a variant row; an index past the rows the archive carries would
+		// colour every pixel green, so fall back to the first.
+		int row = paletteRow < g.paletteRows() ? paletteRow : 0;
 		int[] sizes = new int[g.frameCount()];
 		Map<Long, Integer> histogram = new HashMap<>();
 		for (int f = 0; f < g.frameCount(); f++) {
@@ -104,7 +109,7 @@ public final class MonsterSprite {
 			if (g.width(f) != bodyW || g.height(f) != bodyH) {
 				continue;
 			}
-			BufferedImage img = g.frame(f);
+			BufferedImage img = g.frameRow(f, row);
 			int score = opaque(img);
 			if (score > fallbackScore) {
 				fallbackScore = score;

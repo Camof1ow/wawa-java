@@ -28,7 +28,7 @@ public final class Tiles {
 				continue;
 			}
 			try {
-				loaded[layer] = TileAtlas.load(assets, id);
+				loaded[layer] = TileAtlas.load(assets, id, map.layerPalette[layer]);
 			} catch (IOException e) {
 				// an absent atlas simply leaves that layer blank
 			}

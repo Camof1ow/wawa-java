@@ -28,10 +28,15 @@ public final class TileAtlas {
 
 	/** Loads the atlas for a one-based layer id, as LoadGameTile does. */
 	public static TileAtlas load(Path assets, int id) throws IOException {
+		return load(assets, id, 0);
+	}
+
+	/** Loads the atlas with the palette variant the map gives that layer. */
+	public static TileAtlas load(Path assets, int id, int paletteVariant) throws IOException {
 		String name = String.format("tile%02d.png", id - 1);
 		byte[] raw = Files.readAllBytes(assets.resolve("img").resolve(name));
 		byte[] pal = Files.readAllBytes(assets.resolve("pal").resolve(name));
-		return new TileAtlas(RenderAtlas.composite(raw, pal));
+		return new TileAtlas(RenderAtlas.composite(raw, pal, paletteVariant));
 	}
 
 	/**

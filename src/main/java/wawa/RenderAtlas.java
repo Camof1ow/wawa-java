@@ -17,16 +17,32 @@ public final class RenderAtlas {
 
 	/** Index byte to colour, mapping anything past the palette (and the key) to transparent. */
 	public static BufferedImage composite(byte[] raw, byte[] pal) {
+		return composite(raw, pal, 0);
+	}
+
+	/**
+	 * Composites a sheet using the palette variant in the given row.
+	 *
+	 * <p>The palette file is RGB triples followed by a two-byte trailer, and LoadSpritePal reads
+	 * the colour count per row from the last of those bytes, then copies a variant from
+	 * {@code cols * variant * 3}. So the trailer gives the row width and a variant is a row of it.
+	 */
+	public static BufferedImage composite(byte[] raw, byte[] pal, int variant) {
 		int w = u16(raw, 0x04);
 		int h = u16(raw, 0x06);
-		int colours = (pal.length - 2) / 3;
+		int colours = pal.length >= 2 ? Math.max(0, (pal.length - 2) / 3) : 0;
+		int cols = pal.length >= 2 ? (pal[pal.length - 1] & 0xFF) : 0;
+		if (cols <= 0 || cols > colours) {
+			cols = colours;
+		}
+		int base = variant * cols * 3;
 		BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
 		for (int y = 0; y < h; y++) {
 			for (int x = 0; x < w; x++) {
 				int i = raw[20 + y * w + x] & 0xFF;
 				int argb = 0;
-				if (i < colours && !(i == 0)) {
-					int p = i * 3;
+				int p = base + i * 3;
+				if (i < cols && p + 2 < pal.length - 2 && !(i == 0)) {
 					argb = 0xFF000000 | ((pal[p] & 0xFF) << 16) | ((pal[p + 1] & 0xFF) << 8)
 							| (pal[p + 2] & 0xFF);
 				}

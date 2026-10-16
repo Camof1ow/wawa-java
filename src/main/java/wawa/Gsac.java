@@ -138,7 +138,7 @@ public final class Gsac {
 		for (int y = 0; y < h; y++) {
 			for (int x = 0; x < width; x++) {
 				int idx = data[at + y * width + x] & 0xFF;
-				img.setRGB(x, y, idx == KEY_INDEX ? 0 : argb(idx));
+				img.setRGB(x, y, idx == KEY_INDEX ? 0 : argb(idx, 0));
 			}
 		}
 		return img;
@@ -151,6 +151,18 @@ public final class Gsac {
 
 	/** Decodes one frame to ARGB; magenta decodes as transparent. */
 	public BufferedImage frame(int index) {
+		return frameRow(index, 0);
+	}
+
+	/**
+	 * Decodes one frame with the palette variant held in the given row.
+	 *
+	 * <p>LoadSpritePal picks a variant by copying {@code paletteCols} RGB triples from offset
+	 * {@code paletteCols * variant * 3}, so a row is one variant and paletteRows is how many the
+	 * archive carries. Callers that know the variant (a map's paletteId, or g_anMonsPal for a
+	 * monster) pass it here; everything else uses row 0.
+	 */
+	public BufferedImage frameRow(int index, int row) {
 		if (!fullyDecodable()) {
 			throw new IllegalStateException(source + " mode " + mode() + " not supported yet");
 		}
@@ -172,14 +184,19 @@ public final class Gsac {
 		for (int y = 0; y < h; y++) {
 			for (int x = 0; x < w; x++) {
 				int idx = pixels[y * w + x] & 0xFF;
-				img.setRGB(x, y, idx == KEY_INDEX ? 0 : argb(idx));
+				img.setRGB(x, y, idx == KEY_INDEX ? 0 : argb(idx, row));
 			}
 		}
 		return img;
 	}
 
-	private int argb(int index) {
-		int p = index * 3;
+	/** How many palette variants the archive carries. */
+	public int paletteRows() {
+		return paletteRows;
+	}
+
+	private int argb(int index, int row) {
+		int p = (row * paletteCols + index) * 3;
 		if (p + 2 >= palette.length) {
 			return 0xFF00FF00; // loud green: index outside the palette
 		}
