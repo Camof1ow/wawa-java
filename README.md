@@ -39,6 +39,10 @@ logic is re-derived from the native code, and every format is decoded from the s
   phase, and the quest-status conditions the event scripts test. The menu's QUEST tab lists the
   slots with their summaries, details and delete; the town quest boards (GOrder 8) offer today's
   free quests; NPCs show the offer / report / in-progress mark AnalysisQuest works out.
+- **Dash and SP**: pressing the same direction again within 400 ms dashes (act 0x1e) as
+  KeyPressGamePlay does: twice the walk speed for five steps, through monsters, with two fading
+  afterimages, for maxSP × c / 2000 SP (free in towns). HP and SP come back every 64 frames by
+  PostHeroValue's amounts; both show as bars under the hero.
 - **Terrain**: each map's collision grid is built as LoadGameBlock builds it, from the tile sets'
   `g_anTileBlock` tables in `libwawa.so` (`BlockGrid`). Deep water, cliffs, cave walls and lava
   stop the hero; shallow water and bridges do not. Walking into a blocking tile steps aside to

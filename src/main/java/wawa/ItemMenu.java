@@ -511,7 +511,7 @@ final class ItemMenu extends OrderScreen {
 		clix.sprite(g, gorder, Clix.GORDER, 0x238, 0, 0);
 		clix.sprite(g, gorder, Clix.GORDER, 0x240, 0, 0);
 		bar(g, 0x3a0, 0x3b0, 0x3c0, hero.hp, hero.maxHp);
-		bar(g, 0x3a8, 0x3b8, 0x3c8, hero.maxMp, hero.maxMp);
+		bar(g, 0x3a8, 0x3b8, 0x3c8, hero.mp, hero.maxMp);
 		money(g, 0x2e8, 0x2f0);
 		valueBox(g, 0x2f8, String.valueOf(hero.statPower + weaponValue()), fmt(ATK_LABEL));
 		valueBox(g, 0x300, String.valueOf(hero.armor), fmt(DEF_LABEL));

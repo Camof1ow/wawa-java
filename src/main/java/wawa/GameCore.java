@@ -321,6 +321,20 @@ final class GameCore {
 	private boolean runWalking;
 	/** InitHeroState's +0x48 = (4 - 0) * 2 px a frame; mounts (12) and the cap (14) are not ported. */
 	private static final int HERO_SPEED = 8;
+	/** Sqrt's table of rounded square roots (Ghidra 0x11b604). */
+	private static final int SQRT_TABLE = 0x10b604;
+	/** Act 0x1e, the dash: drawn as a walk, it runs while the step (hero[0x1b]) is below 5. */
+	private static final int ACT_DASH = 0x1e;
+	/** hero[0x49] and hero+0x50: the last direction pressed and when (ms); a dash or a swing's end clears the time. */
+	private int lastDir = -1;
+	private long lastDirAt;
+	/** hero[0x22]: this frame is a dash frame, so DrawUnit keeps its snapshot as an afterimage. */
+	private boolean afterimage;
+	/** DrawUnit's prehero: the hero two frames and one frame back, null unless that frame was a dash frame. */
+	private final Ghost[] ghosts = new Ghost[2];
+
+	private record Ghost(int x, int y, PartSprites.Pose pose) {
+	}
 	/** A scripted hero walk (83, e3): target cell and the arrival direction fixed at command time. */
 	private int heroGoX = -1;
 	private int heroGoY;
@@ -442,6 +456,7 @@ final class GameCore {
 		heroInts = new int[0x100];
 		hero.recompute(rng);
 		hero.hp = hero.maxHp;
+		hero.mp = hero.maxMp;
 		quests.reset();
 		quests.heroClass = heroClass;
 	}
@@ -680,11 +695,19 @@ final class GameCore {
 		frames++;
 		lootable = null;
 		drawnFrame();
+		// DrawUnit's prehero shift: the frame just drawn becomes the newer snapshot.
+		if (!frozen) {
+			shiftGhosts();
+		}
 		tickEffects();
 		calcCamera();
 		if (events.active()) {
 			// SetPhaseHeroStop clears +0x47: a phase stops the player's own walk.
 			stopRun();
+			// PhaseHeroStop: a dash (act 0x1e) stops where it is.
+			if (heroAct == ACT_DASH) {
+				changeHeroAct(HeroAnim.ACT_STAND);
+			}
 			// CalcGamePlay keeps moving the hero and units while a phase runs; monsters stand still
 			// (SetPhaseHeroStop sets their 0x2000 bit) and the player's input goes to the phase.
 			scriptMoves();
@@ -696,7 +719,7 @@ final class GameCore {
 			frozen = false;
 			heroGoX = -1;
 			heroActRun = false;
-			if (!runWalking && !attackRunning && heroAct != 3 && heroAct != 2) {
+			if (!runWalking && !attackRunning && heroAct != 3 && heroAct != 2 && heroAct != ACT_DASH) {
 				heroPx = 0;
 				if (heroAct != HeroAnim.ACT_STAND) {
 					changeHeroAct(HeroAnim.ACT_STAND);
@@ -736,6 +759,16 @@ final class GameCore {
 	 * turning mid-step takes at most one frame longer than the original's free pixel position.
 	 */
 	private void calcHeroRun() {
+		// CalcHeroAct sets the afterimage flag for act 0x1e and ends it at step 5 (as a walk).
+		if (heroAct == ACT_DASH) {
+			afterimage = true;
+			if (heroStep < 5) {
+				dashRun();
+				return;
+			}
+			changeHeroAct(HeroAnim.ACT_WALK);
+			runWalking = true;
+		}
 		if (attackRunning || heroAct == 2 || heroAct == 3 && !flinchBreak && heroPx == 0) {
 			// Direction input waits while a swing plays (KeyPressGamePlay drops it); 갈무리 holds
 			// the hero, and a flinch keeps it still until it ends, unless a direction is pressed
@@ -864,13 +897,29 @@ final class GameCore {
 		}
 	}
 
-	/** PostHeroValue/PostMonsValue: write the pending stat changes into the records. */
+	/**
+	 * PostHeroValue/PostMonsValue: write the pending stat changes into the records. While the hero
+	 * lives, every 64th play frame (wawamain+0xfc &amp; 0x3f, counted before this frame's increment)
+	 * brings HP back by ((Sqrt(CON) * Sqrt(Lv) + 8) &gt;&gt; 4) + 1, four times that where map+0x2d
+	 * has bit 0 (a town, boss or not), and SP by ((Sqrt(INT) * Sqrt(Lv) + 8) &gt;&gt; 4) + 1.
+	 */
 	private void postValues() {
+		if (hero.hp > 0 && ((playFrames - 1) & 0x3f) == 0) {
+			int lv = tableSqrt(hero.level);
+			int hp = hero.hp + ((tableSqrt(hero.con) * lv + 8 >> 4) + 1) * (area.mapKind() == 1 ? 4 : 1);
+			hero.hp = Math.min(hero.maxHp, hp);
+			hero.mp = Math.min(hero.maxMp, hero.mp + (tableSqrt(hero.intel) * lv + 8 >> 4) + 1);
+		}
 		for (Monster m : monsters) {
 			if (m.hp < 0) {
 				m.hp = 0;
 			}
 		}
+	}
+
+	/** Sqrt: the rounded square root from the table at 0x10b604 for 0..300, 17 above, 0 below 0. */
+	private int tableSqrt(int v) {
+		return v < 0 ? 0 : v < 0x12d ? so.u8(SQRT_TABLE + v) : 0x11;
 	}
 
 	/**
@@ -1821,6 +1870,7 @@ final class GameCore {
 				lootCancel();
 			}
 			hero.hp = hero.maxHp;
+			hero.mp = hero.maxMp;
 			hero.inv.gold = Math.max(0, hero.inv.gold - 50);
 			heroX = 10;
 			heroY = 12;
@@ -1920,8 +1970,88 @@ final class GameCore {
 			flinchBreak = true;
 			if (heroAct == 2) {
 				lootEnd();
+				lastDirAt = 0;
+			} else if (heroAct <= 1 || heroAct == 3) {
+				dashPress(dir);
 			}
 		}
+	}
+
+	/**
+	 * KeyPressGamePlay's dash: the same direction pressed again within 400 ms from a stand, a walk
+	 * or a flinch starts act 0x1e if SP covers maxSP * c / 2000, c = max(10, (4900 - 40 INT) / 90),
+	 * or the map is a town (map+0x2d == 1), where it costs nothing. Any other press is remembered
+	 * as the one the next press pairs with. The dust (AddEffect) is not drawn: no effect layer.
+	 */
+	private void dashPress(int dir) {
+		long now = System.currentTimeMillis();
+		int cost = hero.maxMp * Math.max(10, (4900 - 40 * hero.intel) / 90) / 2000;
+		if (dir == lastDir && now - lastDirAt < 401 && (cost <= hero.mp || town())) {
+			heroDir = dir;
+			lastDirAt = 0;
+			if (!town()) {
+				hero.mp = Math.max(0, hero.mp - cost);
+			}
+			changeHeroAct(ACT_DASH);
+			// The press came after the last frame was drawn: the next tick's drawnFrame advance
+			// belongs to that frame, not to the dash's first step.
+			heroHeld = -1;
+			runWalking = false;
+			heroMoveDir = -1;
+		} else {
+			lastDir = dir;
+			lastDirAt = now;
+		}
+	}
+
+	/**
+	 * CalcHeroRun for act 0x1e: MoveHeroPath at twice the walk, 16 px a frame, which is one cell.
+	 * Terrain and the map edge stop it; monsters do not (hero[0x24]). A step a walk had started
+	 * finishes first, in the cell model, and the rest of the frame's 16 px goes on in the dash's
+	 * direction.
+	 */
+	private void dashRun() {
+		for (int left = HERO_SPEED * 2; left > 0 && heroAct == ACT_DASH;) {
+			if (heroPx == 0) {
+				int nx = heroX + DIR_STEP[heroDir][0];
+				int ny = heroY + DIR_STEP[heroDir][1];
+				if (!map.inBounds(nx, ny) || block.terrain(nx, ny)) {
+					takeExit();
+					return;
+				}
+			}
+			int step = Math.min(left, TILE - heroPx);
+			heroPx += step;
+			left -= step;
+			if (heroPx >= TILE) {
+				int moved = moveDir();
+				heroPx = 0;
+				heroMoveDir = -1;
+				heroX += DIR_STEP[moved][0];
+				heroY += DIR_STEP[moved][1];
+				// A portal moves the map, and LoadGameMap ends the dash.
+				takeExit();
+			}
+		}
+	}
+
+	/** map+0x2d == 1: a town with no boss loaded, where the hero cannot fight and dashes for free. */
+	private boolean town() {
+		return area.mapKind() == 1 && !bossLoaded;
+	}
+
+	/** DrawUnit's prehero shift: the older snapshot drops, the hero as just drawn is kept while hero[0x22] was set. */
+	private void shiftGhosts() {
+		ghosts[0] = ghosts[1];
+		ghosts[1] = null;
+		if (afterimage && heroAnim != null) {
+			try {
+				ghosts[1] = new Ghost(heroWorldX(), heroWorldY(), heroAnim.pose(heroLook(), heroStep));
+			} catch (IOException e) {
+				log = "영웅 그림 실패: " + e;
+			}
+		}
+		afterimage = false;
 	}
 
 	/** The key's release: letting go of the held direction clears +0x47, letting go of attack {@link #releaseAttack}. */
@@ -2466,9 +2596,10 @@ final class GameCore {
 		if (heroAct == 2 && attackQueued) {
 			lootEnd();
 		}
-		if (attackQueued && heroPx == 0 && heroAct != 3) {
+		// InitHeroAttack starts nothing while the hero dashes (act 0x1e); the request waits.
+		if (attackQueued && heroPx == 0 && heroAct != 3 && heroAct != ACT_DASH) {
 			Item.Equip w = hero.inv.worn(1);
-			if (w == null || area.mapKind() == 1 && !bossLoaded) {
+			if (w == null || town()) {
 				attackQueued = false;
 				if (w == null) {
 					log = "맨손으로는 공격할 수 없다.";
@@ -2563,6 +2694,8 @@ final class GameCore {
 		attackStep = s;
 		if (s >= f[4]) {
 			attackRunning = false;
+			// HeroAct: an attack act's end clears the double-tap time (hero+0x50).
+			lastDirAt = 0;
 			// CheckQuestSkill at the end of a basic attack's animation (id 0).
 			quests.skillUsed(0);
 		}
@@ -3184,7 +3317,8 @@ final class GameCore {
 
 	/** The hero as drawn: acts 0xf and 0x10 draw as 9 and 0xa (hero+0x2f). */
 	private HeroAnim.Look heroLook() {
-		int act = heroAct == 0xf ? 9 : heroAct == 0x10 ? 0xa : heroAct;
+		// HeroAnim draws the dash (0x1e) as the walk.
+		int act = heroAct == 0xf ? 9 : heroAct == 0x10 ? 0xa : heroAct == ACT_DASH ? HeroAnim.ACT_WALK : heroAct;
 		return HeroAnim.wearing(items, hero.inv.worn(), hero.heroClass, heroDir, act);
 	}
 
@@ -3239,7 +3373,7 @@ final class GameCore {
 		sortUnits();
 		for (Object u : unitOrder) {
 			if (u == HERO_UNIT) {
-				drawHero(g, hx, hy);
+				drawHero(g, hx, hy, ox, oy);
 			} else {
 				drawMonster(g, (Monster) u, ox, oy);
 			}
@@ -3344,10 +3478,20 @@ final class GameCore {
 		}
 	}
 
-	/** DrawUnit for the hero: DrawHeroAnim and this port's HP bar under the feet. */
-	private void drawHero(Gfx g, int hx, int hy) {
+	/**
+	 * DrawUnit for the hero: the dash afterimages, DrawHeroAnim, and this port's HP and SP bars
+	 * under the feet (the original's HUD gauges are not drawn).
+	 */
+	private void drawHero(Gfx g, int hx, int hy, int ox, int oy) {
 		if (heroFade >= 4) {
 			return;
+		}
+		// prehero: two frames back at 25 %, one frame back at 50 % (FadeDrawModule 3 and 2).
+		for (int i = 0; i < 2; i++) {
+			Ghost gh = ghosts[i];
+			if (gh != null && gh.pose() != null) {
+				drawPose(g, gh.pose(), ox + gh.x() * CELL / TILE, oy + gh.y() * CELL / TILE, 3 - i);
+			}
 		}
 		// DrawHeroAnim: the hero's position is the cell centre, as for monsters.
 		try {
@@ -3360,6 +3504,7 @@ final class GameCore {
 		}
 		if (!events.active()) {
 			bar(g, hx - CELL / 2, hy + CELL / 2 - 5, (float) hero.hp / hero.maxHp, 0xff50dc78);
+			bar(g, hx - CELL / 2, hy + CELL / 2 - 1, (float) hero.mp / Math.max(1, hero.maxMp), 0xff5aa0f0);
 		}
 	}
 
@@ -4344,10 +4489,10 @@ final class GameCore {
 		}
 
 		/**
-		 * Kind-4 integers from hero+0xa4: 0 gold (+0xa4), 2 level (+0xac), 3 HP (+0xb0), 4 max HP (+0xb4), 6 max MP
-		 * (+0xbc) — InitHeroState writes +0xb4 and +0xbc (max MP = pow112(INT) * 6 >> 4, as
-		 * {@link Hero#maxMp}), and a01 sets HP to hero[4] / 5. The maxima are derived values, so
-		 * writes to them do not stick; MP (+0xb8) and the rest have no field here and are kept as is.
+		 * Kind-4 integers from hero+0xa4: 0 gold (+0xa4), 2 level (+0xac), 3 HP (+0xb0), 4 max HP (+0xb4), 5 SP
+		 * (+0xb8), 6 max SP (+0xbc) — InitHeroState writes +0xb4 and +0xbc (max SP = pow112(INT) * 6 >> 4,
+		 * as {@link Hero#maxMp}), and a01 sets HP to hero[4] / 5. The maxima are derived values, so
+		 * writes to them do not stick; the rest have no field here and are kept as is.
 		 */
 		@Override
 		public int heroInt(int i) {
@@ -4356,6 +4501,7 @@ final class GameCore {
 				case 2 -> hero.level;
 				case 3 -> hero.hp;
 				case 4 -> hero.maxHp;
+				case 5 -> hero.mp;
 				case 6 -> hero.maxMp;
 				default -> heroInts[i & 0xff];
 			};
@@ -4367,6 +4513,7 @@ final class GameCore {
 				case 0 -> hero.inv.gold = v;
 				case 2 -> hero.level = v;
 				case 3 -> hero.hp = Math.min(hero.maxHp, v);
+				case 5 -> hero.mp = Math.min(hero.maxMp, v);
 				case 4, 6 -> {
 				}
 				default -> heroInts[i & 0xff] = v;
@@ -4474,6 +4621,7 @@ final class GameCore {
 		int gold = hero.inv.gold;
 		int level = hero.level;
 		int hp = hero.hp;
+		int mp = hero.mp;
 		EventScript.Table t = events.local;
 		for (int i = 0; i < t.count(); i++) {
 			if (t.status[i] != 0 || t.type(i) != 4) {
@@ -4520,6 +4668,7 @@ final class GameCore {
 			hero.inv.gold = gold;
 			hero.level = level;
 			hero.hp = hp;
+			hero.mp = mp;
 		}
 	}
 
@@ -4626,6 +4775,7 @@ final class GameCore {
 			p.setProperty("x", String.valueOf(heroX));
 			p.setProperty("y", String.valueOf(heroY));
 			p.setProperty("hp", String.valueOf(hero.hp));
+			p.setProperty("mp", String.valueOf(hero.mp));
 			p.setProperty("gold", String.valueOf(hero.inv.gold));
 			p.setProperty("caps", hero.inv.capText());
 			p.setProperty("equip", hero.inv.equipText());
@@ -4727,6 +4877,7 @@ final class GameCore {
 			hero.intel = Integer.parseInt(st[3]);
 			hero.recompute(rng);
 			hero.hp = Math.min(hero.maxHp, Integer.parseInt(p.getProperty("hp", String.valueOf(hero.maxHp))));
+			hero.mp = Math.min(hero.maxMp, Integer.parseInt(p.getProperty("mp", String.valueOf(hero.maxMp))));
 			monsters.clear();
 			String blob = p.getProperty("monsters", "");
 			if (!blob.isBlank()) {
@@ -5295,7 +5446,112 @@ final class GameCore {
 		lootTest(sink);
 		questTest(sink, t02Vars);
 		zorderTest(sink);
+		dashTest(sink);
 		new GameCore(assets, storage).writeFrame(sink, "slots-after.png");
+	}
+
+	/**
+	 * Selftest of the dash on a02: → pressed twice within 400 ms starts act 0x1e, which moves a
+	 * cell a frame until step 5 for maxSP * c / 2000 SP and leaves afterimages; a second press
+	 * 500 ms late is a walk; with no SP nothing starts; in the town a01 it is free. Then 64 play
+	 * frames bring HP and SP back by PostHeroValue's amounts.
+	 */
+	private void dashTest(FrameSink sink) throws IOException {
+		loadMap("a02");
+		for (int i = 0; i < 600 && events.active(); i++) {
+			gameTick();
+		}
+		monsters.removeIf(m -> !m.npc);
+		// A row with eight open cells to the right, away from the edges and their portals.
+		int sx = -1;
+		int sy = -1;
+		for (int y = 3; y < map.height - 3 && sx < 0; y++) {
+			for (int x = 3; x + 9 < map.width && sx < 0; x++) {
+				boolean open = true;
+				for (int k = 0; k <= 8; k++) {
+					open &= !block.terrain(x + k, y) && monsterAt(x + k, y) == null;
+				}
+				if (open) {
+					sx = x;
+					sy = y;
+				}
+			}
+		}
+		heroX = sx;
+		heroY = sy;
+		heroPx = 0;
+		heroDir = 3;
+		changeHeroAct(HeroAnim.ACT_STAND);
+		gameTick();
+		hero.mp = hero.maxMp;
+		int cost = hero.maxMp * Math.max(10, (4900 - 40 * hero.intel) / 90) / 2000;
+		key(Keys.RIGHT);
+		keyUp(Keys.RIGHT);
+		key(Keys.RIGHT);
+		keyUp(Keys.RIGHT);
+		boolean started = heroAct == ACT_DASH;
+		int spent = hero.maxMp - hero.mp;
+		int ticks = 0;
+		int ghostTicks = 0;
+		while (heroAct == ACT_DASH && ticks < 20) {
+			gameTick();
+			ticks++;
+			if (ghosts[0] != null || ghosts[1] != null) {
+				ghostTicks++;
+			}
+			if (ticks == 3) {
+				writeFrame(sink, "dash.png");
+			}
+		}
+		int cells = heroX - sx;
+		for (int i = 0; i < 6; i++) {
+			gameTick();
+		}
+		boolean ghostsGone = ghosts[0] == null && ghosts[1] == null;
+		key(Keys.RIGHT);
+		keyUp(Keys.RIGHT);
+		lastDirAt -= 500;
+		key(Keys.RIGHT);
+		keyUp(Keys.RIGHT);
+		boolean late = heroAct != ACT_DASH;
+		for (int i = 0; i < 4; i++) {
+			gameTick();
+		}
+		hero.mp = 0;
+		key(Keys.LEFT);
+		keyUp(Keys.LEFT);
+		key(Keys.LEFT);
+		keyUp(Keys.LEFT);
+		boolean broke = heroAct != ACT_DASH;
+		for (int i = 0; i < 4; i++) {
+			gameTick();
+		}
+		// PostHeroValue: one 64-frame mark from HP 1 and SP 0.
+		hero.hp = 1;
+		int lv = tableSqrt(hero.level);
+		int hpStep = (tableSqrt(hero.con) * lv + 8 >> 4) + 1;
+		int spStep = (tableSqrt(hero.intel) * lv + 8 >> 4) + 1;
+		for (int i = 0; i < 64; i++) {
+			gameTick();
+		}
+		String regen = "hp=1->" + hero.hp + "/" + (1 + hpStep) + " sp=0->" + hero.mp + "/" + spStep;
+		loadMap("a01");
+		for (int i = 0; i < 600 && events.active(); i++) {
+			gameTick();
+		}
+		changeHeroAct(HeroAnim.ACT_STAND);
+		hero.mp = 0;
+		key(Keys.DOWN);
+		keyUp(Keys.DOWN);
+		key(Keys.DOWN);
+		keyUp(Keys.DOWN);
+		boolean townFree = heroAct == ACT_DASH && hero.mp == 0;
+		for (int i = 0; i < 8; i++) {
+			gameTick();
+		}
+		System.out.println("dash start=" + started + " sp=" + spent + "/" + cost + " ticks=" + ticks + " cells=" + cells
+				+ " ghosts=" + ghostTicks + "/" + ghostsGone + " late=" + late + " nosp=" + broke + " town=" + townFree
+				+ " regen " + regen);
 	}
 
 	/**

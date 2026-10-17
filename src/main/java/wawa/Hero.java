@@ -52,6 +52,8 @@ public final class Hero {
 	public int hp;
 	public int maxHp;
 	public int maxMp;
+	/** +0xb8: the SP the dash and skills spend; full on a new game, a level-up and a revival. */
+	public int mp;
 	public int accuracy;
 	public int dodge;
 	public int crit;
@@ -121,6 +123,7 @@ public final class Hero {
 			con++;
 			recompute(rng);
 			hp = maxHp;
+			mp = maxMp;
 			gained++;
 		}
 		return gained;
