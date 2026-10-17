@@ -87,6 +87,12 @@ final class GameCore {
 	/** The menu's ITEM tab (GOrder, opened with CLEAR or I): the field stands still while it is open. */
 	private ItemMenu itemMenu;
 	private boolean menuOpen;
+	/** The open GOrder screen under menuOpen: a menu tab (gorder+4 = menuTab) or the quest board. */
+	private OrderScreen menuScreen;
+	private int menuTab;
+	private QuestMenu questMenu;
+	private QuestMenu questBoard;
+	private EmptyTab emptyTab;
 	/** GOrder 0xd/0xe (event lo 2): the field stands still while the shop is open. */
 	private ShopMenu shop;
 	private boolean shopOpen;
@@ -145,8 +151,45 @@ final class GameCore {
 		}
 
 		@Override
+		public void switchTab(int dir) {
+			GameCore.this.switchTab(dir);
+		}
+
+		@Override
 		public void notPorted(String what) {
 			log = what + ": 아직 포팅되지 않았습니다";
+		}
+	};
+	/** GMenu 0x67 / 0x3a5 / 900 over the quest list and the board, and a board quest taken. */
+	private final QuestMenu.Popups questPopups = new QuestMenu.Popups() {
+		@Override
+		public void detail(Quests.Slot s) {
+			talk.startQuest(quests.def(s.id1 - 1).title, null, quests.summary(s, true), TalkBox.CONFIRM_ONE);
+			menuGMenu = true;
+			menuYes = null;
+		}
+
+		@Override
+		public void delete(int slot) {
+			talk.startMessage(so.cbytes(so.u32(OrderScreen.MESSAGE + 4 * (0x3a5 - 900))), so.cbytes(GATE_CANCEL));
+			menuGMenu = true;
+			menuYes = () -> quests.delete(slot);
+		}
+
+		@Override
+		public void full() {
+			events.abortAll();
+			talk.startMessage(so.cbytes(so.u32(OrderScreen.MESSAGE)), null);
+			menuGMenu = true;
+			menuYes = null;
+		}
+
+		@Override
+		public void accepted(int id) {
+			if (events.depth() > 0) {
+				byte[] t = quests.titled(0xd4614, id);
+				talk.headline(t, 0, t.length);
+			}
 		}
 	};
 	private Gsac imoticon;
@@ -2799,6 +2842,52 @@ final class GameCore {
 		}
 		changeHeroAct(HeroAnim.ACT_STAND);
 		itemMenu.open(hero, menuHost);
+		menuScreen = itemMenu;
+		menuTab = 1;
+		menuOpen = true;
+	}
+
+	/**
+	 * The tab column's up / down: GOrderFuncBack and InitGOrder for the next of STATUS, ITEM,
+	 * SKILL, PET, LOG, QUEST and SYSTEM, with the focus left on the tab column. ITEM and QUEST
+	 * are ported; the others show their tab and an empty panel.
+	 */
+	private void switchTab(int dir) {
+		menuTab = (menuTab + dir + 7) % 7;
+		try {
+			if (menuTab == 1) {
+				itemMenu.openOnTabs(hero, menuHost);
+				menuScreen = itemMenu;
+			} else if (menuTab == 5) {
+				if (questMenu == null) {
+					questMenu = new QuestMenu(orderSheets(), so, items, assets, quests, questPopups);
+				}
+				questMenu.open(hero, menuHost, false, null);
+				menuScreen = questMenu;
+			} else {
+				if (emptyTab == null) {
+					emptyTab = new EmptyTab(orderSheets(), so, items);
+				}
+				emptyTab.open(hero, menuHost, menuTab);
+				menuScreen = emptyTab;
+			}
+		} catch (IOException e) {
+			log = "메뉴 로드 실패: " + e;
+		}
+	}
+
+	/** Event 42: GOrderFuncUp(8), the town's quest board over today's list; play waits while it is open. */
+	private void openBoard(int[] ids) {
+		try {
+			if (questBoard == null) {
+				questBoard = new QuestMenu(orderSheets(), so, items, assets, quests, questPopups);
+			}
+		} catch (IOException e) {
+			log = "게시판 로드 실패: " + e;
+			return;
+		}
+		questBoard.open(hero, menuHost, true, quests.boardList(ids, mapCode));
+		menuScreen = questBoard;
 		menuOpen = true;
 	}
 
@@ -2856,6 +2945,20 @@ final class GameCore {
 	/** KeyPressGMenu over the menu first, else KeyPressGOrder. */
 	private void menuKey(int code) {
 		if (menuGMenu) {
+			if (talk.kind == TalkBox.Kind.QUEST || talk.kind == TalkBox.Kind.MESSAGE) {
+				// GMenu 0x67, 0x3a5 and 900: ResultGMenu(1) runs menuYes (a delete), any result closes.
+				int r = talk.gmenuKey(code);
+				if (r >= 0) {
+					Runnable yes = menuYes;
+					menuGMenu = false;
+					menuYes = null;
+					talk.clear();
+					if (r == 1 && yes != null) {
+						yes.run();
+					}
+				}
+				return;
+			}
 			if (menuYes != null) {
 				int r = talk.warningKey(code);
 				if (r >= 0) {
@@ -2876,7 +2979,7 @@ final class GameCore {
 		if (shopOpen) {
 			shop.key(code);
 		} else {
-			itemMenu.key(code);
+			menuScreen.key(code);
 		}
 	}
 
@@ -2932,7 +3035,7 @@ final class GameCore {
 				if (shopOpen) {
 					shop.draw(og);
 				} else {
-					itemMenu.draw(og);
+					menuScreen.draw(og);
 				}
 				if (menuGMenu) {
 					talk.draw(og, 0, true);
@@ -3148,6 +3251,12 @@ final class GameCore {
 				int ey = cy - unitHeight(m) * CELL / TILE;
 				clip(g, 0x30, cx, ey);
 				clip(g, m.emote < 0 ? 0x33 : m.aniState == 1 || m.aniState == 3 || m.aniState == 0xb ? 0x32 : 0x31, cx, ey);
+			}
+			// DrawMonsAnim's quest mark (+0x39) over the head while no phase runs, bobbing by
+			// {0, 1, 4, 3, 2, 1, 0}[frames % 7] (0xdd4d8).
+			if (m.questMark != 0 && !events.active()) {
+				int bob = so.u8(0xdd4d8 + frames % 7);
+				clip(g, 0x2c + m.questMark, cx, cy - (unitHeight(m) + bob) * CELL / TILE);
 			}
 		}
 		int hx = ox + heroX * CELL + CELL / 2 + heroOffX() * CELL / TILE;
@@ -4240,6 +4349,11 @@ final class GameCore {
 		}
 
 		@Override
+		public void openBoard(int[] ids) {
+			GameCore.this.openBoard(ids);
+		}
+
+		@Override
 		public void questOffer(int id) {
 			GameCore.this.questOffer(id);
 		}
@@ -4247,6 +4361,12 @@ final class GameCore {
 		@Override
 		public int questFlags(int id) {
 			return quests.flagsOf(id);
+		}
+
+		@Override
+		public int questSlot(int id) {
+			Quests.Slot s = quests.find(id);
+			return s == null ? -1 : java.util.Arrays.asList(quests.slots).indexOf(s);
 		}
 
 		@Override
@@ -4267,6 +4387,79 @@ final class GameCore {
 		@Override
 		public void questPhaseEnd() {
 			quests.phaseEnd();
+		}
+	}
+
+	/**
+	 * AnalysisQuest's NPC marks: for each open local type-4 event, the first unit of its NPC (the
+	 * byte after its trigger) gets 1 when AnalysisPhaseQuest reaches an offer it could take, 2 a
+	 * turn-in of a complete quest, 3 a turn-in of one still open; when the live flags reach
+	 * nothing, the walk runs again with every open goal taken as met (offers there count only
+	 * for failed quests, turn-ins by the live flags). Variables and hero integers come back after
+	 * each event. While a phase runs the marks stay clear.
+	 */
+	private void questMarks() {
+		for (Monster m : monsters) {
+			m.questMark = 0;
+		}
+		if (events.depth() != 0) {
+			return;
+		}
+		EventScript.Vars v = events.vars;
+		byte[] u8 = v.u8.clone();
+		byte[] two = v.two.clone();
+		byte[] one = v.one.clone();
+		int[] sys = v.sys.clone();
+		int[] ints = heroInts.clone();
+		int gold = hero.inv.gold;
+		int level = hero.level;
+		int hp = hero.hp;
+		EventScript.Table t = events.local;
+		for (int i = 0; i < t.count(); i++) {
+			if (t.status[i] != 0 || t.type(i) != 4) {
+				continue;
+			}
+			Monster m = unit(t.d[t.offs[i] + 1] & 0xff);
+			if (m == null) {
+				continue;
+			}
+			int r = events.questProbe(i);
+			if (r == Integer.MAX_VALUE) {
+				m.questMark |= 1;
+			} else if (r < 0) {
+				m.questMark |= (quests.slots[~r].flags & 0x40) != 0 ? 2 : 3;
+			} else if (r > 0) {
+				if ((quests.hypo[r - 1] & 0x80) != 0) {
+					m.questMark |= 1;
+				}
+			} else {
+				int[] real = new int[Quests.SLOTS];
+				for (int s = 0; s < Quests.SLOTS; s++) {
+					real[s] = quests.slots[s].flags;
+					if (quests.slots[s].id1 != 0) {
+						quests.slots[s].flags = quests.hypo[s];
+					}
+				}
+				r = events.questProbe(i);
+				for (int s = 0; s < Quests.SLOTS; s++) {
+					quests.slots[s].flags = real[s];
+				}
+				if (r == Integer.MAX_VALUE) {
+					m.questMark |= 1;
+				} else if (r < 0) {
+					m.questMark |= (real[~r] & 0x40) != 0 ? 2 : 3;
+				} else if (r > 0 && (real[r - 1] & 0x80) != 0) {
+					m.questMark |= 1;
+				}
+			}
+			System.arraycopy(u8, 0, v.u8, 0, u8.length);
+			System.arraycopy(two, 0, v.two, 0, two.length);
+			System.arraycopy(one, 0, v.one, 0, one.length);
+			System.arraycopy(sys, 0, v.sys, 0, sys.length);
+			System.arraycopy(ints, 0, heroInts, 0, ints.length);
+			hero.inv.gold = gold;
+			hero.level = level;
+			hero.hp = hp;
 		}
 	}
 
@@ -4336,6 +4529,11 @@ final class GameCore {
 		@Override
 		public boolean searchPhase() {
 			return events.searchPhase();
+		}
+
+		@Override
+		public void marks() {
+			questMarks();
 		}
 	}
 
@@ -4596,6 +4794,8 @@ final class GameCore {
 		boolean npc;
 		/** +6 &amp; 8: a named unit (InitMonsNamed). */
 		boolean named;
+		/** +0x39: AnalysisQuest's mark, 1 a quest to offer, 2 one to report, 3 one in progress. */
+		int questMark;
 		/** ChangeMonsDir's ani entry (+0x2c), row (+0x27), mirror (+0x28) and direction (+5). */
 		int ani = -1;
 		int row;
@@ -5050,12 +5250,15 @@ final class GameCore {
 		loadMap("t02");
 		enterEvents();
 		runPhases(sink, null);
+		quests.analyze();
+		String marks0 = marks();
 		if (hero.inv.worn(1) == null) {
 			new Stage().giveItem(297, 1, 2);
 		}
 		quests.accept(1);
 		quests.analyze();
 		String offer1 = quests.slots[0].id1 - 1 + "/" + Integer.toHexString(quests.slots[0].flags);
+		String marksOpen = marks();
 		Monster foe = nearestMonster();
 		monsters.removeIf(m -> m != foe && !m.npc);
 		heroX = foe.x;
@@ -5092,6 +5295,8 @@ final class GameCore {
 		heroY = roman.y;
 		heroPx = 0;
 		heroDir = 3;
+		String marks1 = marks();
+		writeFrame(sink, "quest-mark.png");
 		key(Keys.ENTER);
 		runPhases(sink, "quest-done.png");
 		// Sub slots 1-4 full: offering sub quest 13 shows 예 / 아니오, and 예 finds no slot (GMenu 900).
@@ -5109,10 +5314,66 @@ final class GameCore {
 		boolean full = gmenu == 900;
 		writeFrame(sink, "quest-full.png");
 		key(Keys.ENTER);
+		// a01's board (local event 10: IF var 0x368, op 42 over quests 158..174): today's list,
+		// 확인 takes the first into FREE slot 5 and closes the board.
+		loadMap("a01");
+		enterEvents();
+		runPhases(sink, null);
+		events.vars.set(0x368, 1);
+		events.execPhase(EventRunner.LOCAL, 10, true);
+		for (int t = 0; t < 400 && !menuOpen && events.active(); t++) {
+			gameTick();
+			if (t % 12 == 11 && !menuOpen) {
+				key(Keys.ENTER);
+			}
+		}
+		boolean board = menuOpen && menuScreen == questBoard;
+		writeFrame(sink, "quest-board.png");
+		key(Keys.ENTER);
+		int free = quests.slots[5].id1 - 1;
+		boolean closed = !menuOpen;
+		runPhases(sink, null);
+		// The menu: ITEM's bar, back to the tab column, down four tabs to QUEST; the rows, the SUB
+		// slot's popup, 상세보기, 삭제.
+		openMenu();
+		key(Keys.ESCAPE);
+		for (int i = 0; i < 4; i++) {
+			key(Keys.DOWN);
+		}
+		int tab = menuTab;
+		key(Keys.RIGHT);
+		key(Keys.DOWN);
+		writeFrame(sink, "quest-list.png");
+		int sub = quests.slots[1].id1 - 1;
+		key(Keys.ENTER);
+		key(Keys.ENTER);
+		boolean detail = menuGMenu && talk.kind == TalkBox.Kind.QUEST;
+		writeFrame(sink, "quest-detail.png");
+		key(Keys.ENTER);
+		key(Keys.DOWN);
+		key(Keys.ENTER);
+		boolean ask = menuGMenu && talk.kind == TalkBox.Kind.MESSAGE;
+		key(Keys.ENTER);
+		int deleted = quests.slots[1].id1 - 1;
+		key(Keys.ESCAPE);
+		key(Keys.ESCAPE);
 		System.out.println("quest slot0=" + offer1 + " " + after1 + " meat=" + meatBefore + "->" + meat + " ev3=" + ev3
 				+ " state2=" + quests.state[2] + " slot0=" + (quests.slots[0].id1 - 1) + " full=" + full + "/" + gmenu
-				+ " roundtrip=" + roundtrip
-				+ " log=" + log);
+				+ " roundtrip=" + roundtrip);
+		System.out.println("quest marks=" + marks0 + "/" + marksOpen + " report=" + marks1 + " board=" + board + "/" + free + " closed="
+				+ closed + " tab=" + tab + " detail=" + detail + " delete=" + ask + " " + sub + "->" + deleted + " menu="
+				+ menuOpen + " a01=" + marks());
+	}
+
+	/** Selftest: the marked units as variant:mark. */
+	private String marks() {
+		StringBuilder b = new StringBuilder();
+		for (Monster m : monsters) {
+			if (m.questMark != 0) {
+				b.append(b.length() == 0 ? "" : ",").append(m.variant).append(':').append(m.questMark);
+			}
+		}
+		return b.length() == 0 ? "-" : b.toString();
 	}
 
 	/** Selftest: plays running phases and field GMenus out, OK every 12 frames; true if a GMenu came up. */

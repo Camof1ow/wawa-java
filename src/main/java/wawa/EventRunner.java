@@ -164,6 +164,12 @@ final class EventRunner {
 
 		/** ExitPhase with nothing left to run: AnalysisQuest and its completion headlines. */
 		void questPhaseEnd();
+
+		/** 42: the quest board (GOrderFuncUp(8)) over these quest ids; the phase waits until it closes. */
+		void openBoard(int[] ids);
+
+		/** The slot holding quest id, -1 when none does. */
+		int questSlot(int id);
 	}
 
 	private static final class Entry {
@@ -322,26 +328,12 @@ final class EventRunner {
 
 	/** ExecPhase(type, idx, run). */
 	int execPhase(int type, int idx, boolean run) {
-		EventScript.Table t = table(type);
 		int depth = stack.size();
 		instance[depth] = (byte) (instanceCounter + 1);
 		instanceCounter = (instanceCounter + 1) & 0xf0;
-		int p = t.phase(idx);
-		int n = t.d[p] & 0xff;
-		if (n == 0) {
+		Entry e = frame(type, idx);
+		if (e == null) {
 			return -1;
-		}
-		Entry e = new Entry();
-		e.t = t;
-		e.type = type;
-		e.idx = idx;
-		e.lines = new int[n];
-		e.headerAt = p + 2;
-		e.headerLen = t.d[p + 1] & 0xff;
-		int q = p + (t.d[p + 1] & 0xff) + 2;
-		for (int k = 0; k < n; k++) {
-			e.lines[k] = q;
-			q += EventScript.phaseOneLen(t.d, q);
 		}
 		stack.add(e);
 		shared = 0;
@@ -359,6 +351,87 @@ final class EventRunner {
 			return 3;
 		}
 		return e.result;
+	}
+
+	/** The frame ExecPhase pushes for event idx of table type, or null for an empty phase. */
+	private Entry frame(int type, int idx) {
+		EventScript.Table t = table(type);
+		int p = t.phase(idx);
+		int n = t.d[p] & 0xff;
+		if (n == 0) {
+			return null;
+		}
+		Entry e = new Entry();
+		e.t = t;
+		e.type = type;
+		e.idx = idx;
+		e.lines = new int[n];
+		e.headerAt = p + 2;
+		e.headerLen = t.d[p + 1] & 0xff;
+		int q = p + (t.d[p + 1] & 0xff) + 2;
+		for (int k = 0; k < n; k++) {
+			e.lines[k] = q;
+			q += EventScript.phaseOneLen(t.d, q);
+		}
+		return e;
+	}
+
+	/**
+	 * AnalysisPhaseQuest on local event idx: its lines walked with nothing shown, only conditions,
+	 * assignments and sub-phases taken, until a quest offer (the holding slot + 1, or MAX_VALUE
+	 * when no slot holds the quest) or the turn-in of a held quest (~slot); 0 when it reaches
+	 * neither. Assignments write the live variables; the caller restores them.
+	 */
+	int questProbe(int idx) {
+		List<Entry> frames = new ArrayList<>();
+		Entry first = frame(LOCAL, idx);
+		if (first != null) {
+			frames.add(first);
+		}
+		int r = 0;
+		for (int budget = 4096; !frames.isEmpty() && budget > 0; budget--) {
+			Entry e = frames.get(frames.size() - 1);
+			if (e.pc >= e.lines.length) {
+				frames.remove(frames.size() - 1);
+				continue;
+			}
+			int[] l = line(e, e.pc);
+			byte[] d = e.t.d;
+			int op = d[l[0] + l[1] - 1] & 0xff;
+			int a = l[0] + l[1];
+			int hi = op >> 4;
+			switch (op & 0xf) {
+				case 0xd -> {
+					int pc = calcCondition(e, hi, a);
+					e.pc = pc < 0 ? e.lines.length : pc;
+				}
+				case 0xe -> {
+					assign(d, a);
+					e.pc++;
+				}
+				case 1 -> {
+					int id = u16(d, a);
+					if (hi <= 1) {
+						e.pc++;
+						Entry sub = frame(hi + 2, id);
+						if (sub != null) {
+							frames.add(sub);
+						}
+					} else if (hi == 2) {
+						int s = w.questSlot(id);
+						r = s >= 0 ? s + 1 : Integer.MAX_VALUE;
+						frames.clear();
+					} else if (hi == 3 && w.questSlot(id) >= 0) {
+						r = ~w.questSlot(id);
+						frames.clear();
+					} else {
+						e.pc++;
+					}
+				}
+				default -> e.pc++;
+			}
+		}
+		return r;
 	}
 
 	/**
@@ -577,12 +650,18 @@ final class EventRunner {
 				case 2 -> {
 					w.heroStop();
 					// Modes 0, 1 and 6 read the grade range (and an option flag) from three bytes;
-					// mode 3 ignores its bytes. Gamble (2), the quest board (4) and the cash shop (5)
-					// are not ported.
+					// mode 3 ignores its bytes; 4 is the quest board over u8 n, u16 ids. Gamble (2)
+					// and the cash shop (5) are not ported.
 					if (hi == 0 || hi == 1 || hi == 6) {
 						w.openShop(hi, d[a] & 0xff, d[a + 1] & 0xff);
 					} else if (hi == 3) {
 						w.openShop(3, 0, 0);
+					} else if (hi == 4) {
+						int[] ids = new int[d[a] & 0xff];
+						for (int k = 0; k < ids.length; k++) {
+							ids[k] = u16(d, a + 1 + 2 * k);
+						}
+						w.openBoard(ids);
 					} else {
 						w.notPorted("GOrder/GMenu 화면(" + Integer.toHexString(op) + ")");
 					}

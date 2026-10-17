@@ -33,10 +33,12 @@ logic is re-derived from the native code, and every format is decoded from the s
 - **Harvesting (갈무리)**: holding the attack key over a corpse plays act 2 with its gauge, one
   gather every 12 frames per size class, rolling materials (`g_anMonsDrop`/`g_anMonsItem`), runes
   and recipes as GetItemHeroGather does; kills give experience only.
-- **Quests** (`QuestBook`, `Quests`): the 265 quest definitions of `dat/quesn`, the hero's seven
-  slots, GMenu 100 offers (main quests confirm, sub and free quests accept or decline), kill,
-  condition, item and time goals, quest drops rolled during 갈무리, turn-in with the reward phase,
-  and the quest-status conditions the event scripts test.
+- **Quests** (`QuestBook`, `Quests`, `QuestMenu`): the 265 quest definitions of `dat/quesn`, the
+  hero's seven slots, GMenu 100 offers (main quests confirm, sub and free quests accept or decline),
+  kill, condition, item and time goals, quest drops rolled during 갈무리, turn-in with the reward
+  phase, and the quest-status conditions the event scripts test. The menu's QUEST tab lists the
+  slots with their summaries, details and delete; the town quest boards (GOrder 8) offer today's
+  free quests; NPCs show the offer / report / in-progress mark AnalysisQuest works out.
 - **Terrain**: each map's collision grid is built as LoadGameBlock builds it, from the tile sets'
   `g_anTileBlock` tables in `libwawa.so` (`BlockGrid`). Deep water, cliffs, cave walls and lava
   stop the hero; shallow water and bridges do not. Walking into a blocking tile steps aside to
@@ -57,11 +59,11 @@ logic is re-derived from the native code, and every format is decoded from the s
   attack, defence and the hero's looks. The menu's ITEM tab (`ItemMenu`, opened with `I` or
   Backspace) lists, equips, unequips, uses and discards them on the original sheets, and the shops
   scripts open (`ShopMenu`, GOrder 0xd/0xe modes 0, 1, 3 and 6) buy and sell at the original's
-  prices. The other menu tabs, the gamble and cash shops, gear options, runes, sockets, cooldowns
-  and durability loss are not ported yet.
-- **Event script gaps.** Quests, buffs, sound, zoom, map exit, area and object triggers, and
-  effect/attack actions are not ported, nor the quest offer (GMenu 100), the gamble and cash shops
-  and the quest board (GOrder 8); a script that reaches one logs `[미포팅]` and carries on.
+  prices. The other menu tabs besides QUEST (STATUS, SKILL, PET, LOG, SYSTEM), the gamble and cash
+  shops, gear options, runes, sockets, cooldowns and durability loss are not ported yet.
+- **Event script gaps.** Buffs, sound, zoom, map exit, area and object triggers, and effect/attack
+  actions are not ported, nor the gamble and cash shops; a script that reaches one logs `[미포팅]`
+  and carries on.
   Boss/regen map exits do open their warning (GMenu 0x74) and enter on its Enter button.
 - **Animation playback.** Poses for any state and step are composed (`MonsterAnim.pose`,
   `HeroAnim.pose`). Monsters animate every normal state (hide, stand, walk, alert, chase, attack,
@@ -135,7 +137,7 @@ npx http-server web    # or any static server; the page asks for your wild.apk o
 | `src/main/java/wawa/{MonsterTable,MonsterData,MonsterStats,MonsterSprite,MonsterAnim}.java` | monsters |
 | `src/main/java/wawa/{PartSprites,HeroAnim}.java` | dat part composition shared by monsters and the hero; hero outfit layers |
 | `src/main/java/wawa/{EventScript,EventRunner,TalkBox}.java` | event tables and length rules, the phase interpreter, the dialogue box |
-| `src/main/java/wawa/{QuestBook,Quests}.java` | quest definitions and reward phases, the hero's quest slots, goal checks and quest drops |
+| `src/main/java/wawa/{QuestBook,Quests,QuestMenu}.java` | quest definitions and reward phases, the hero's quest slots, goal checks and quest drops, the QUEST tab and quest board |
 | `src/main/java/wawa/{Hero,Item,Inventory,Combat,Fight}.java` | hero record, item tables, the hero's items, hit resolution, melee tables and hit geometry |
 | `src/main/java/wawa/{Gsac,RenderAtlas,ElfImage,ResourceFile}.java` | asset decoding |
 | `src/main/java/wawa/{CheckMaps,CheckMapsRun,ExtractAll,MatchSprite,FindBySize}.java` | tools |

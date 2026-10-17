@@ -186,6 +186,7 @@ final class ShopMenu extends OrderScreen {
 	// ---- keys ---------------------------------------------------------------------------------
 
 	/** KeyPressGOrder (the bar) and KeyPressGOrderBuySell; returns false once the shop has closed. */
+	@Override
 	boolean key(int code) {
 		boolean back = code == Keys.ESCAPE || code == Keys.BACK_SPACE;
 		boolean ok = code == Keys.ENTER || code == Keys.SPACE || code == Keys.K5;
@@ -377,6 +378,7 @@ final class ShopMenu extends OrderScreen {
 	// ---- drawing ------------------------------------------------------------------------------
 
 	/** DrawGOrder for 0xd / 0xe, then the popup; once per frame on the 480x320 layer. */
+	@Override
 	void draw(Gfx g) {
 		frames++;
 		List<Entry> l = list();

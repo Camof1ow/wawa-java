@@ -48,6 +48,9 @@ final class Quests {
 
 		/** SearchPhase. */
 		boolean searchPhase();
+
+		/** AnalysisQuest's last part: the NPC quest marks. */
+		void marks();
 	}
 
 	static final int SLOTS = 7;
@@ -315,6 +318,7 @@ final class Quests {
 				hypo[i] |= 0x40;
 			}
 		}
+		host.marks();
 	}
 
 	/** ExitPhase with nothing left to run: AnalysisQuest, and "quest complete" for each condition quest that just completed. */
@@ -364,6 +368,42 @@ final class Quests {
 		s.clear();
 		state[id] = (byte) (book.defs[id].kind() == 2 ? localDate() % 255 + 1 : 1);
 		host.headline(titled(QUEST_ACHIEVED, id), false);
+	}
+
+	/**
+	 * Opcode 42's board list: the ids shuffled by a local LCG seeded with 1 + LocalDate + the map
+	 * code's three bytes (seed * 0x41c64e6d + 0x3039, index ((seed &gt;&gt; 16) &amp; 0x7fff) % n), cut
+	 * to five before the quests already done today are taken out, then those held in a slot.
+	 */
+	int[] boardList(int[] ids, String map) {
+		int date = localDate();
+		int seed = 1 + date + (map.charAt(0) | map.charAt(1) << 8 | map.charAt(2) << 16);
+		int[] arr = ids.clone();
+		int n = arr.length;
+		for (int i = 0; i < n; i++) {
+			seed = seed * 0x41c64e6d + 0x3039;
+			int j = ((seed >> 16) & 0x7fff) % n;
+			int t = arr[i];
+			arr[i] = arr[j];
+			arr[j] = t;
+		}
+		n = Math.min(n, 5);
+		int code = date % 255 + 1;
+		int last = n - 1;
+		for (int i = last; i >= 0; i--) {
+			if ((state[arr[i]] & 0xff) == code) {
+				System.arraycopy(arr, i + 1, arr, i, last - i);
+				last--;
+			}
+		}
+		int[] out = new int[5];
+		int cnt = 0;
+		for (int i = 0; i <= last && i < 5; i++) {
+			if (find(arr[i]) == null) {
+				out[cnt++] = arr[i];
+			}
+		}
+		return java.util.Arrays.copyOf(out, cnt);
 	}
 
 	/** Delete from the quest list (ResultGMenu 0x3a5): the slot empties, the state byte stays. */

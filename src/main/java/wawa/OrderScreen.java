@@ -31,6 +31,9 @@ abstract class OrderScreen {
 		/** CheckQuestItem(id, n) after AddItem took n of id. */
 		void itemAdded(int id, int n);
 
+		/** The tab column's up / down: the menu moves to the previous or next of its seven tabs. */
+		void switchTab(int dir);
+
 		void notPorted(String what);
 	}
 
@@ -125,6 +128,12 @@ abstract class OrderScreen {
 	void message(int id) {
 		host.message(so.cbytes(so.u32(MESSAGE + 4 * (id - 900))));
 	}
+
+	/** KeyPressGOrder for this screen; false once it has closed. */
+	abstract boolean key(int code);
+
+	/** DrawGOrder for this screen, once per frame on the 480x320 layer. */
+	abstract void draw(Gfx g);
 
 	/**
 	 * GOrderFuncBack and DrawGOrderBack: the dimmed field, the frame, a tab base and inactive label

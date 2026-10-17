@@ -64,6 +64,12 @@ final class ItemMenu extends OrderScreen {
 		this.heroes = heroes;
 	}
 
+	/** InitGOrder for ITEM reached from another tab: the focus stays on the tab column. */
+	void openOnTabs(Hero h, Host host) {
+		open(h, host);
+		focus = 0;
+	}
+
 	/** GOrderFuncUp to ITEM: InitGOrder's ITEM state, the cursor on the category bar of tab 0. */
 	void open(Hero h, Host host) {
 		this.hero = h;
@@ -139,6 +145,7 @@ final class ItemMenu extends OrderScreen {
 	// ---- keys ----------------------------------------------------------------------------
 
 	/** KeyPressGOrder / KeyPressGOrderItem; returns false once the menu has closed. */
+	@Override
 	boolean key(int code) {
 		if (options != null) {
 			popupKey(code);
@@ -155,6 +162,8 @@ final class ItemMenu extends OrderScreen {
 				focus = 1;
 				row = 0;
 				col = 0;
+			} else if (code == Keys.UP || code == Keys.K2 || code == Keys.DOWN || code == Keys.K8) {
+				host.switchTab(code == Keys.UP || code == Keys.K2 ? -1 : 1);
 			}
 			return true;
 		}
@@ -470,6 +479,7 @@ final class ItemMenu extends OrderScreen {
 	// ---- drawing ---------------------------------------------------------------------------
 
 	/** DrawGOrder for ITEM, then DrawItemSelect; called once per frame on the 480x320 layer. */
+	@Override
 	void draw(Gfx g) {
 		frames++;
 		List<Object> l = list();
