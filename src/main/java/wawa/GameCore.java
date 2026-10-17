@@ -209,6 +209,13 @@ final class GameCore {
 	private int comboAge;
 	/** AddDamage's queue (wawamain+0x55c4): {world x, y, kind (1 crit), frame, value (MAX_VALUE: MISS)}. */
 	private final List<int[]> damages = new ArrayList<>();
+	/** h[0x23]: the hero takes no hits (acts 3, 0x1d and 4), set at the start of each tick. */
+	private boolean heroImmune;
+	/** A direction pressed since the last flinch: only a fresh press cancels act 3 (h[0x47] apart from the held key). */
+	private boolean flinchBreak;
+	/** wawamain's target monster and its HP bar's frames (36 after each landed hit). */
+	private Monster target;
+	private int targetTimer;
 	/** wawamain+0xfc: frames played with no phase running, which corpse decay counts. */
 	private int playFrames;
 	private Fight fight;
@@ -443,6 +450,7 @@ final class GameCore {
 	/** Loads one of the shipped maps by its 3-character code, as LoadGameMap does. */
 	private void loadMap(String code) throws IOException {
 		mapCode = code;
+		target = null;
 		String letter = code.substring(0, 1);
 		map = MapData.load(assets, "assets/eng/map/" + letter + ".png", code);
 		block = new BlockGrid(map, so);
@@ -532,7 +540,7 @@ final class GameCore {
 			frozen = false;
 			heroGoX = -1;
 			heroActRun = false;
-			if (!runWalking && !attackRunning) {
+			if (!runWalking && !attackRunning && heroAct != 3) {
 				heroPx = 0;
 				if (heroAct != HeroAnim.ACT_STAND) {
 					changeHeroAct(HeroAnim.ACT_STAND);
@@ -546,11 +554,6 @@ final class GameCore {
 			calcHeroRun();
 			postValues();
 			attackHero();
-			for (Monster m : monsters) {
-				if (m.atkOnce && (m.x != heroX || m.y != heroY)) {
-					m.atkOnce = false;
-				}
-			}
 		}
 		drawSetup();
 	}
@@ -567,8 +570,9 @@ final class GameCore {
 	 * turning mid-step takes at most one frame longer than the original's free pixel position.
 	 */
 	private void calcHeroRun() {
-		if (attackRunning) {
-			// Direction input waits while a swing plays (KeyPressGamePlay drops it).
+		if (attackRunning || heroAct == 3 && !flinchBreak && heroPx == 0) {
+			// Direction input waits while a swing plays (KeyPressGamePlay drops it); a flinch keeps
+			// the hero still until it ends, unless a direction is pressed afresh during it.
 			return;
 		}
 		if (heroPx == 0) {
@@ -719,16 +723,28 @@ final class GameCore {
 			int tier = Math.min(hpTier.length - 1, (r.monsterId % 210) / 42);
 			boolean npc = r.monsterId >= NPC_ID;
 			String name = monsterSprites == null ? null : monsterSprites.name(r.monsterId);
+			// InitMonsLimit: the patrol window is the tiles within 48 px of the spawn, kept on the map.
+			int px = r.cellX * TILE + TILE / 2;
+			int py = r.cellY * TILE + TILE / 2;
 			Monster m = new Monster(r.cellX, r.cellY, name != null ? name : "몬스터#" + r.monsterId,
-					ab != null ? ab.hp() : hpTier[tier], ab != null ? ab.attack() : atkTier[tier],
-					r.monsterId, !npc && tier >= 2, Math.max(0, r.cellX - 2), Math.max(0, r.cellY - 2),
-					r.cellX + 2, r.cellY + 2);
-			m.facing = r.direction;
+					ab != null ? ab.hp() : hpTier[tier], ab != null ? ab.attack() : atkTier[tier], r.monsterId,
+					Math.max(0, px - 48) >> 4, Math.max(0, py - 48) >> 4,
+					Math.min(map.width * TILE - 1, px + 48) >> 4, Math.min(map.height * TILE - 1, py + 48) >> 4);
 			m.level = level;
 			m.uid = i;
+			int dir = r.direction == 8 ? rng.nextInt(8) : r.direction;
 			if (npc) {
 				m.npc = true;
-				changeDir(m, 1, r.direction == 8 ? rng.nextInt(8) : r.direction);
+				changeDir(m, 1, dir);
+			} else {
+				// InitMonsOne: hidden (state 0) when the id has that animation, else standing; the
+				// animation starts at a step that differs between records.
+				m.chaseLen = fight.chaseLen(r.monsterId);
+				changeDir(m, fight.hides(r.monsterId) ? 0 : 1, dir);
+				int[] e = monsterSprites == null || m.ani < 0 ? null : monsterSprites.animEntry(m.variant, m.ani);
+				if (e != null && e[2] > 0) {
+					m.step = i % e[2];
+				}
 			}
 			if (ab != null) {
 				m.defence = ab.defence();
@@ -741,12 +757,8 @@ final class GameCore {
 	}
 
 	/**
-	 * CalcMons, then the port's monster AI. A pending push (+0x4b) moves the monster first. State
-	 * 0xf flings a dying monster for four frames, after which it lies as a corpse (state 9) that
-	 * decays a step every 4 play frames up to 0xa0 (640 frames), fades out and is freed. State 8,
-	 * the flinch, waits for its animation. The rest stays the port's AI until CalcMonsAct is
-	 * ported: aggressive types walk the hero down, passive ones keep to their patrol window, and
-	 * Rand100() &lt; 0x32 puts a monster on hold half the time.
+	 * CalcMons: per monster, the pending push (+0x4b); then, while it is seen, the HP thirds that
+	 * arm a flee (StateCond 0x40), CalcMonsAct and CalcMonsRun. A freed corpse leaves the list.
 	 */
 	private void monsterTick() {
 		for (Monster m : monsters) {
@@ -757,78 +769,623 @@ final class GameCore {
 				moveMonster(m, m.pushDir, fight.pushed(fight.size(m.variant), attackForm, m.pushKind == 8), false);
 				m.pushKind = 0;
 			}
-			if (m.aniState == 0xf) {
-				fling(m);
+			if (m.fade >= 1) {
 				continue;
 			}
-			if (m.aniState == 9) {
-				// Named corpses never decay in the original; this port does not mark named units.
-				if (m.fade == 0 && (playFrames & 3) == 0 && ++m.cnt >= 0xa0) {
-					m.fade = 1;
+			int third = Math.max(m.hp, 0) * 3 / (m.maxHp + 1);
+			if (third < m.hpThird) {
+				if ((fight.cond(m.variant) & 0x40) != 0 && third == 0 && m.flee == 0 && m.hp > 0) {
+					m.flee = -1;
 				}
-				continue;
+				m.hpThird = third;
 			}
-			if (m.aniState == 8) {
-				// The flinch's cycle end hands the monster back to the AI (CalcMonsAct: state 2).
-				if (m.wrapped) {
-					m.wrapped = false;
-					m.aniState = -1;
-					m.ani = -1;
-				}
-				continue;
-			}
-			if (m.hp <= 0) {
-				continue;
-			}
-			int dx = Integer.compare(heroX, m.x);
-			int dy = Integer.compare(heroY, m.y);
-			int dist = Math.abs(heroX - m.x) + Math.abs(heroY - m.y);
-			if (m.aggressive && dist <= 5) {
-				m.state = 0;
-				m.idle = false;
-				if (dist == 1) {
-					monsterStrike(m);
-				} else if (dx != 0 && monsterAt(m.x + dx, m.y) == null && !monsterBlocked(m, m.x + dx, m.y)) {
-					m.x += dx;
-					m.facing = dx > 0 ? 1 : 3;
-				} else if (dy != 0 && monsterAt(m.x, m.y + dy) == null && !monsterBlocked(m, m.x, m.y + dy)) {
-					m.y += dy;
-					m.facing = dy > 0 ? 2 : 0;
-				}
-				continue;
-			}
-			m.state = 2;
-			if (rng.nextInt(100) < 0x32) {
-				m.idle = true;
-				continue;
-			}
-			m.idle = false;
-			if (m.x <= m.pixelLoX() / 16) {
-				m.facing = 1;
-			} else if (m.x >= m.pixelHiX() / 16) {
-				m.facing = 3;
-			} else if (m.y <= m.pixelLoY() / 16) {
-				m.facing = 2;
-			} else if (m.y >= m.pixelHiY() / 16) {
-				m.facing = 0;
-			} else {
-				m.facing = 1 + rng.nextInt(4);
-			}
-			int px = m.x * CELL + (m.facing % 2 == 0 ? 0 : m.facing == 1 ? CELL : -CELL);
-			int py = m.y * CELL + (m.facing < 2 ? 0 : m.facing == 2 ? CELL : -CELL);
-			int nx = m.facing % 2 == 0 ? m.x : Math.floorDiv(px + CELL / 2, CELL);
-			int ny = m.facing < 2 ? m.y : Math.floorDiv(py + CELL / 2, CELL);
-			nx = Math.max(m.pixelLoX() / 16, Math.min(m.pixelHiX() / 16 - 1, nx));
-			ny = Math.max(m.pixelLoY() / 16, Math.min(m.pixelHiY() / 16 - 1, ny));
-			if (nx != m.x && monsterAt(nx, m.y) == null && (nx != heroX || ny != m.y) && !monsterBlocked(m, nx, m.y)) {
-				m.x = nx;
-			} else if (ny != m.y && monsterAt(m.x, ny) == null && (m.x != heroX || ny != heroY)
-					&& !monsterBlocked(m, m.x, ny)) {
-				m.y = ny;
-			}
+			calcMonsAct(m);
+			calcMonsRun(m);
 		}
 		// FreeMonsOne: a corpse is gone once its fade-out has run.
+		for (Monster m : monsters) {
+			if (m.aniState == 9 && m.fade >= 4 && m == target) {
+				target = null;
+			}
+		}
 		monsters.removeIf(m -> m.aniState == 9 && m.fade >= 4);
+	}
+
+	/**
+	 * CalcMonsAct for a normal monster: sight first (states 0, 1, 3, 0xb), then per state. "Cycle
+	 * done" is step 0 with nothing held, which is where the stand, walk, alert, attack and flinch
+	 * animations hand over.
+	 */
+	private void calcMonsAct(Monster m) {
+		int st = m.aniState;
+		boolean cyc = m.step == 0 && m.held == 0;
+		if (m.variant <= 0xa5 && (st == 0 || st == 1 || st == 3 || st == 0xb) && hero.hp > 0 && heroAct <= 0x25
+				&& look(m)) {
+			return;
+		}
+		if (st == 5 && cyc) {
+			chase(m);
+		} else if (st == 4) {
+			if (m.trig && !attackDecide(m)) {
+				chase(m);
+			}
+		} else if (st == 2 || st == 0x11) {
+			if (m.flee < 0 && m.hp > 0) {
+				if (m.flee == -1 && rng.nextInt(100) > 49) {
+					m.flee = 1;
+				} else {
+					m.flee = 1;
+					changeDir(m, 10, detailDir(m, heroWorldX(), heroWorldY()) ^ 1);
+				}
+			} else if (st == 0x11 && fight.kind(m.variant) == 0) {
+				// A boar waits for its post-attack cycle to end, with no roll.
+				if (cyc && !attackDecide(m)) {
+					chase(m);
+				}
+			} else if (rng.nextInt(100) < 50 && !attackDecide(m)) {
+				chase(m);
+			}
+		} else if (st == 0xb) {
+			if (m.trig) {
+				actPoint(m);
+			}
+		} else if (st == 0xf) {
+			fling(m);
+		} else if (st == 9) {
+			// Named corpses never decay in the original; this port does not mark named units.
+			if (m.fade == 0 && (playFrames & 3) == 0 && ++m.cnt >= 0xa0) {
+				m.fade = 1;
+			}
+		} else if (st != 0 && cyc) {
+			if (st == 6 || st == 7) {
+				changeDir(m, (fight.bullet(m.variant) == 2 || fight.bullet(m.variant) == 3) && ++m.cnt < 3 ? 6 : 0x11, m.dir);
+			} else if (st == 8) {
+				if (m.hp < 1) {
+					initMonsDown(m);
+				} else {
+					changeDir(m, 2, m.dir);
+				}
+			} else if (st == 1 || st == 3) {
+				actMove(m);
+			}
+		}
+	}
+
+	/**
+	 * CalcMonsActLook: the hero inside the front or back sight rectangle (g_arcMonsLook_E, rotated
+	 * for a diagonal facing) and reachable within the chase length turns the monster toward it;
+	 * with StateCond 0x10 an ally of its kind already fighting does too.
+	 */
+	private boolean look(Monster m) {
+		int mx = monsterPx(m);
+		int my = monsterPy(m);
+		int hx = heroWorldX();
+		int hy = heroWorldY();
+		int[] l = fight.look(m.variant);
+		if (inSight(m.dir, l, hx - mx, hy - my)) {
+			int r = routing(m, hx >> 4, hy >> 4, m.chaseLen, false);
+			if (r >= 0) {
+				lookDir(m, r);
+				return true;
+			}
+		} else if ((fight.cond(m.variant) & 0x10) != 0) {
+			for (Monster j : monsters) {
+				if (j != m && !j.npc && fight.kind(j.variant) == fight.kind(m.variant) && j.aniState >= 4 && j.aniState <= 10
+						&& inSight(m.dir, l, monsterPx(j) - mx, monsterPy(j) - my)) {
+					lookDir(m, m.dir);
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	/** CalcMonsActLook's rectangles for sight {a, b, c, d}: F in front, B behind; x0 &lt;= dx &lt; x1 and y0 &lt;= dy &lt; y1. */
+	private static boolean inSight(int dir, int[] l, int dx, int dy) {
+		if ((dir & 4) != 0) {
+			// Diagonal facings rotate the offset; the second line uses the new dx, as decompiled.
+			dx = (dx + dy) * 91 >> 7;
+			dy = (dy - dx) * 91 >> 7;
+		}
+		int a = l[0];
+		int b = l[1];
+		int c = l[2];
+		int d = l[3];
+		return switch (dir & 3) {
+			case 0 -> in(dx, dy, -c, c, -d, 0) || in(dx, dy, -a, a, 0, b);
+			case 1 -> in(dx, dy, -c, c, 0, d) || in(dx, dy, -a, a, -b, 0);
+			case 2 -> in(dx, dy, -d, 0, -c, c) || in(dx, dy, 0, b, -a, a);
+			default -> in(dx, dy, 0, d, -c, c) || in(dx, dy, -b, 0, -a, a);
+		};
+	}
+
+	private static boolean in(int x, int y, int x0, int x1, int y0, int y1) {
+		return x0 <= x && x < x1 && y0 <= y && y < y1;
+	}
+
+	/**
+	 * ChangeMonsLookDir: a standing, walking or homing monster notices the hero. One that hides
+	 * (or stands without a hidden animation) goes alert (state 5, "!"); a risen ambusher goes
+	 * straight to battle stance with the "!" bubble.
+	 */
+	private boolean lookDir(Monster m, int want) {
+		int st = m.aniState;
+		if (st != 0 && st != 1 && st != 3 && st != 0xb) {
+			return false;
+		}
+		if (!fight.hides(m.variant) || st == 0) {
+			adjustDir(m, 5, m.dir, want);
+		} else {
+			adjustDir(m, 2, m.dir, want);
+			m.emote = 18;
+		}
+		return true;
+	}
+
+	/** CalcMonsActMove / CalcMonsActChase's flee: an armed flee (-1) runs half the time, a forced one always. */
+	private boolean fleeNow(Monster m) {
+		if (m.flee != -1 || rng.nextInt(100) < 50) {
+			m.flee = 1;
+			changeDir(m, 10, detailDir(m, heroWorldX(), heroWorldY()) ^ 1);
+			return true;
+		}
+		m.flee = 1;
+		return false;
+	}
+
+	/**
+	 * CalcMonsActChase: route (GetMonsRouting, nearest fallback) to the hero's side at the attack
+	 * rectangle's centre, the nearer side first; three failed routes walk straight at the hero,
+	 * the fourth gives up with a "?".
+	 */
+	private void chase(Monster m) {
+		if (m.flee < 0 && m.hp > 0 && fleeNow(m)) {
+			return;
+		}
+		int tx = heroWorldX();
+		int ty = heroWorldY();
+		int mx = monsterPx(m);
+		int[] r = fight.attackRect(m.variant, ty < monsterPy(m) ? 1 : 0);
+		int cx = (r[0] + r[2]) >> 1;
+		int g1 = tx + cx;
+		int g2 = tx - cx;
+		int gy = ty + ((r[1] + r[3]) >> 1);
+		if (Math.abs(g2 - mx) < Math.abs(g1 - mx)) {
+			int t = g1;
+			g1 = g2;
+			g2 = t;
+		}
+		if (hero.hp > 0) {
+			m.trig = false;
+			m.cross = 0;
+			for (int g : new int[] { g1, g2 }) {
+				int d = routing(m, g >> 4, gy >> 4, m.chaseLen, true);
+				if (d >= 0) {
+					adjustDir(m, 4, m.dir, d == 8 ? detailDir(m, tx, ty) : d);
+					m.fails = 0;
+					return;
+				}
+			}
+			if (++m.fails < 4) {
+				adjustDir(m, 4, m.dir, detailDir(m, tx, ty));
+				return;
+			}
+			m.fails = 0;
+		}
+		m.emote = 18;
+		changeDir(m, 1, m.dir);
+	}
+
+	/**
+	 * CalcMonsActAttack: the hero inside the attack rectangle (g_arcMonsAttack_E; row 1 when the
+	 * hero is above, mirrored when it is to the right) starts the attack (state 6), facing it
+	 * sideways (boars: 8-way), armed (+0x3c) for one strike.
+	 */
+	private boolean attackDecide(Monster m) {
+		if (hero.hp < 1 || heroAct > 0x25) {
+			return false;
+		}
+		int mx = monsterPx(m);
+		int my = monsterPy(m);
+		int dx = heroWorldX() - mx;
+		int dy = heroWorldY() - my;
+		int row = heroWorldY() < my ? 1 : 0;
+		int mir = row;
+		int[] r = fight.attackRect(m.variant, row);
+		if (mx <= heroWorldX()) {
+			mir ^= 1;
+		}
+		int x0 = mir != 0 ? -r[2] : r[0];
+		int x1 = mir != 0 ? -r[0] : r[2];
+		if (!in(dx, dy, x0, x1, r[1], r[3])) {
+			return false;
+		}
+		int d;
+		int ax = Math.abs(dx);
+		int ay = Math.abs(dy);
+		if ((fight.cond(m.variant) & 6) == 0 || ay < ax >> 1) {
+			d = row == mir ? 2 : 3;
+		} else if (ax < ay >> 1) {
+			d = row != 0 ? 0 : 1;
+		} else {
+			d = row == 0 ? (mir != 0 ? 7 : 5) : (mir != 0 ? 6 : 4);
+		}
+		// The row and mirror go in first: ChangeMonsDir keeps the row for sideways facings.
+		m.row = row;
+		m.mirror = mir != 0;
+		changeDir(m, 6, d);
+		m.trig = true;
+		m.cnt = 0;
+		m.fails = 0;
+		return true;
+	}
+
+	/**
+	 * CalcMonsActMove: out of the patrol window it heads home (state 0xb); otherwise it counts the
+	 * cycles of its stand or walk and then switches, for RandRange(g_anMonsWaitCnt or MoveCnt)
+	 * more cycles, in a ChangeMonsRandDir direction.
+	 */
+	private void actMove(Monster m) {
+		if (m.flee < 0 && m.hp > 0 && fleeNow(m)) {
+			return;
+		}
+		if (!inWindow(m)) {
+			m.tgtX = (m.loX * 16 + (m.hiX + 1) * 16) >> 5;
+			m.tgtY = (m.loY * 16 + (m.hiY + 1) * 16) >> 5;
+			actPoint(m);
+		} else if ((m.cnt & 0xf) < (m.cnt >> 4)) {
+			m.cnt++;
+		} else {
+			int ns = m.aniState == 1 ? 3 : 1;
+			int t = ns == 1 ? fight.waitCount(m.variant) : fight.moveCount(m.variant);
+			m.cnt = randRange(t & 0xf, t >> 4) << 4;
+			randDir(m, ns, m.dir);
+		}
+	}
+
+	private boolean inWindow(Monster m) {
+		int mx = monsterPx(m);
+		int my = monsterPy(m);
+		return m.loX * 16 <= mx && mx < (m.hiX + 1) * 16 && m.loY * 16 <= my && my < (m.hiY + 1) * 16;
+	}
+
+	/** CalcMonsActPoint: route to the target tile (no length limit), or stand if there is none. */
+	private void actPoint(Monster m) {
+		m.trig = false;
+		m.cross = 0;
+		int r = routing(m, m.tgtX, m.tgtY, 0xff, true);
+		if (r < 0) {
+			changeDir(m, 1, m.dir);
+		} else {
+			adjustDir(m, 0xb, m.dir, r == 8 ? detailDir(m, m.tgtX * 16 + 8, m.tgtY * 16 + 8) : r);
+			m.cnt = 0;
+		}
+	}
+
+	/** CalcMonsGetTrigger: crossing a tile centre on both axes (a still axis counts) re-arms the decision (+0x3c). */
+	private void getTrigger(Monster m, int ox, int oy) {
+		int x = monsterPx(m);
+		int y = monsterPy(m);
+		int yb = y == oy ? 1 : y > oy ? ((y + 8) >> 4 != (oy + 8) >> 4 ? 1 : 0) : ((y + 7) >> 4 != (oy + 7) >> 4 ? 1 : 0);
+		int xb = x == ox ? 1 : x > ox ? ((x + 8) >> 4 != (ox + 8) >> 4 ? 1 : 0) : ((x + 7) >> 4 != (ox + 7) >> 4 ? 1 : 0);
+		m.cross |= yb | xb << 1;
+		if (m.cross == 3) {
+			m.trig = true;
+		}
+	}
+
+	/** ChangeMonsDetailDir: the 8-way direction from the monster toward a point. */
+	private static int detailDir(Monster m, int tx, int ty) {
+		return Fight.detailDir(tx - monsterPx(m), ty - monsterPy(m));
+	}
+
+	/** ChangeMonsRandDir: a random allowed column of g_anMonsTurnDir from the current direction. */
+	private void randDir(Monster m, int st, int cur) {
+		int mask = fight.mask(fight.kind(m.variant));
+		int r = randRange(0, Integer.bitCount(mask & 0xff) - 1);
+		int j = 0;
+		for (int c = 0, k = 0; c < 8; c++) {
+			if ((mask >> c & 1) != 0 && k++ == r) {
+				j = c;
+				break;
+			}
+		}
+		changeDir(m, st, fight.turn(cur & 7, j));
+	}
+
+	/**
+	 * ChangeMonsAdjustDir: the allowed turn from the current direction closest to the wanted one
+	 * (with every direction allowed, the wanted one itself). A wanted 8 keeps the direction.
+	 */
+	private void adjustDir(Monster m, int st, int cur, int want) {
+		int mask = fight.mask(fight.kind(m.variant));
+		if (want > 7) {
+			changeDir(m, st, cur);
+			return;
+		}
+		if ((mask & 0xff) == 0xff) {
+			changeDir(m, st, want);
+			return;
+		}
+		int[] score = new int[8];
+		for (int c = 0; c < 8; c++) {
+			score[fight.turn(want, c) & 7] = 4 - ((c + 1) >> 1);
+		}
+		int best = 0;
+		int pick = cur;
+		for (int c = 0; c < 8; c++) {
+			int d = fight.turn(cur & 7, c) & 7;
+			if ((mask >> c & 1) != 0 && score[d] > best) {
+				best = score[d];
+				pick = d;
+			}
+		}
+		changeDir(m, st, pick);
+	}
+
+	/** RandRange(a, b): a + Rand() % (b - a + 1), inclusive. */
+	private int randRange(int a, int b) {
+		return b < a ? a : a + rng.nextInt(b - a + 1);
+	}
+
+	/**
+	 * GetMonsRouting: a breadth-first search over tiles from the monster to (tx, ty) through cells
+	 * its body (g_aptMonsBlock_L) fits, straight steps before diagonals, at most 128 tiles queued.
+	 * Returns the first step's direction, 8 when already there, -1 with no route or one longer
+	 * than {@code limit} straight tiles (a diagonal counts 1.5). With {@code fallback} an
+	 * unreachable target leads to the nearest reached tile, scanned outward from the target.
+	 */
+	private int routing(Monster m, int tx, int ty, int limit, boolean fallback) {
+		int w = map.width;
+		int h = map.height;
+		int mx = monsterPx(m) >> 4;
+		int my = monsterPy(m) >> 4;
+		if (mx == tx && my == ty) {
+			return 8;
+		}
+		int kind = fight.kind(m.variant);
+		int bw = fight.bodyW(kind) - 1;
+		int bh = fight.bodyH(kind) - 1;
+		int mask = so.u8(MONS_BLOCK + m.variant) & 7;
+		int[] g = new int[w * h];
+		Arrays.fill(g, 0xffff);
+		int start = my * w + mx;
+		g[start] = 0;
+		int[] q = new int[128];
+		int head = 0;
+		int tail = 0;
+		int found = -1;
+		boolean first = true;
+		search:
+		while (true) {
+			int cur;
+			int cost;
+			if (first) {
+				first = false;
+				cur = start;
+				cost = 8;
+			} else {
+				cur = q[head++ & 127];
+				cost = (g[cur] & 0xfff8) + 8;
+			}
+			int x = cur % w;
+			int y = cur / w;
+			int left = x - ((bw + 1) >> 1);
+			boolean up = row(x, y - 1 - bh, left, bw, mask);
+			boolean down = row(x, y + 1, left, bw, mask);
+			boolean lt = column(left - 1, y - bh, bh, mask);
+			boolean rt = column(left + bw + 1, y - bh, bh, mask);
+			boolean[] ok = { up, down, lt, rt,
+					up && rt && free(x + 1 + (bw >> 1), y - 1 - bh, mask),
+					down && lt && free(x - 1 - ((bw + 1) >> 1), y + 1, mask),
+					up && lt && free(x - 1 - ((bw + 1) >> 1), y - 1 - bh, mask),
+					down && rt && free(x + 1 + (bw >> 1), y + 1, mask) };
+			for (int code = 0; code < 8; code++) {
+				int nx = x + DIR_STEP[code][0];
+				int ny = y + DIR_STEP[code][1];
+				if (!ok[code] || nx < 0 || ny < 0 || nx >= w || ny >= h) {
+					continue;
+				}
+				int n = ny * w + nx;
+				if (cost < (g[n] & 0xfff8)) {
+					q[tail++ & 127] = n;
+					g[n] = cost | code;
+					if (nx == tx && ny == ty) {
+						found = n;
+						break search;
+					}
+				}
+			}
+			if (tail <= head || head <= tail - 128) {
+				break;
+			}
+		}
+		int n = found;
+		if (found < 0 || tail <= head || head <= tail - 128) {
+			if (!fallback) {
+				return -1;
+			}
+			n = nearest(g, w, h, mx, my, tx, ty);
+			if (n < 0) {
+				return -1;
+			}
+		}
+		if (g[n] == 0) {
+			return 8;
+		}
+		int c = 0;
+		int code;
+		do {
+			code = g[n] & 7;
+			c += code < 4 ? 2 : 3;
+			n -= DIR_STEP[code][1] * w + DIR_STEP[code][0];
+		} while (g[n] != 0);
+		return c > 2 * limit ? -1 : code;
+	}
+
+	/** UnitBlockUp/Down: a row of the body's width is in the map and free of the monster's mask. */
+	private boolean row(int x, int y, int left, int bw, int mask) {
+		if (y < 0 || y >= map.height) {
+			return false;
+		}
+		for (int i = left; i <= left + bw; i++) {
+			if (!free(i, y, mask)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** UnitBlockLeft/Right: a column of the body's height. */
+	private boolean column(int x, int top, int bh, int mask) {
+		if (x < 0 || x >= map.width) {
+			return false;
+		}
+		for (int j = top; j <= top + bh; j++) {
+			if (!free(x, j, mask)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private boolean free(int x, int y, int mask) {
+		return map.inBounds(x, y) && !block.blocks(x, y, mask);
+	}
+
+	/** GetMonsRouting's fallback: the reached tile with the smallest mark, scanned out from the target toward the monster. */
+	private static int nearest(int[] g, int w, int h, int mx, int my, int tx, int ty) {
+		int cx = Math.max(0, Math.min(w - 1, tx));
+		int cy = ty < 0 ? 0 : ty >= h ? h - 1 : ty;
+		int best = 0xffff;
+		int bestN = -1;
+		if (Math.abs((my - cy) * w) < Math.abs(mx - cx)) {
+			int step = Integer.compare(mx, cx);
+			for (int col = cx, span = 1; col != mx; col += step, span++) {
+				for (int k = 0; k <= span && cy + k < h; k++) {
+					int n = (cy + k) * w + col;
+					if (g[n] < best) {
+						best = g[n];
+						bestN = n;
+					}
+				}
+				for (int k = 1; k <= span && cy - k >= 0; k++) {
+					int n = (cy - k) * w + col;
+					if (g[n] < best) {
+						best = g[n];
+						bestN = n;
+					}
+				}
+				if (bestN >= 0) {
+					break;
+				}
+			}
+		} else {
+			int step = Integer.compare(my, cy);
+			for (int r = cy, span = 1; r != my; r += step, span++) {
+				for (int k = 0; k <= span && cx + k < w; k++) {
+					int n = r * w + cx + k;
+					if (g[n] < best) {
+						best = g[n];
+						bestN = n;
+					}
+				}
+				for (int k = 1; k <= span && cx - k >= 0; k++) {
+					int n = r * w + cx - k;
+					if (g[n] < best) {
+						best = g[n];
+						bestN = n;
+					}
+				}
+				if (bestN >= 0) {
+					break;
+				}
+			}
+		}
+		return bestN;
+	}
+
+	/**
+	 * CalcMonsRun: walking (3), chasing (4), fleeing (0xa) and homing (0xb) move at g_anMonsSpeed
+	 * plus frame &amp; 1 half px; the attack (6, 7) lunges and strikes inside its step window.
+	 */
+	private void calcMonsRun(Monster m) {
+		int st = m.aniState;
+		int k = switch (st) {
+			case 3, 0xb -> 0;
+			case 4, 0xa -> 1;
+			case 6, 7 -> 3;
+			default -> -1;
+		};
+		if (k < 0) {
+			return;
+		}
+		int v = fight.speed(m.variant, k) + (frames & 1);
+		int ox = monsterPx(m);
+		int oy = monsterPy(m);
+		switch (st) {
+			case 3 -> {
+				if (!moveMonster(m, m.dir, v, false) || !inWindow(m)) {
+					m.cnt = 0;
+				}
+			}
+			case 4 -> {
+				if (!moveMonster(m, m.dir, v, false)) {
+					changeDir(m, 2, m.dir);
+				} else {
+					getTrigger(m, ox, oy);
+				}
+			}
+			case 0xa -> {
+				if (!moveMonster(m, m.dir, v, false)) {
+					if (m.cnt++ > 12) {
+						changeDir(m, 2, m.dir);
+					}
+				} else if (m.fleeFrames++ > 36) {
+					changeDir(m, 2, m.dir);
+				}
+			}
+			case 0xb -> {
+				if (!moveMonster(m, m.dir, v, false)) {
+					if (m.cnt++ >= 37) {
+						actMove(m);
+					}
+					return;
+				}
+				getTrigger(m, ox, oy);
+				if (inWindow(m)) {
+					m.cnt = 0;
+					m.aniState = 1;
+					actMove(m);
+				}
+			}
+			default -> monsAttack(m, v);
+		}
+	}
+
+	/**
+	 * CalcMonsRun states 6 and 7: inside the attack's step window (g_anMonsAttFrm_E) the monster
+	 * lunges every tick and AttackMonsHitHero tries the armed strike with RandRange(900, 1100)
+	 * (2700..3300 for state 7), drawn each window tick. Projectiles are not ported: a ranged
+	 * attacker strikes inside its rectangle like a melee one.
+	 */
+	private void monsAttack(Monster m, int v) {
+		int[] w = fight.attackSteps(m.variant);
+		if (m.step < w[0] || m.step > w[1]) {
+			return;
+		}
+		int[] r = (fight.cond(m.variant) & 6) == 0 ? fight.attackRect(m.variant, m.row) : fight.boarRect(m.row);
+		moveMonster(m, m.dir, v, false);
+		int scale = m.aniState == 7 ? randRange(2700, 3300) : randRange(900, 1100);
+		if (!m.trig) {
+			return;
+		}
+		int x0 = m.mirror ? -r[2] : r[0];
+		int x1 = m.mirror ? -r[0] : r[2];
+		if (in(heroWorldX() - monsterPx(m), heroWorldY() - monsterPy(m), x0, x1, r[1], r[3]) && hero.hp > 0
+				&& heroAct < 0x26) {
+			monsterHitsHero(m, scale);
+		}
 	}
 
 	/**
@@ -860,18 +1417,22 @@ final class GameCore {
 	 * terrain mask blocks stops it, and so do the hero and other solid monsters unless
 	 * {@code fling} (mode 2, which tests terrain mask 0x23 alone).
 	 */
-	private void moveMonster(Monster m, int dir, int halfPx, boolean fling) {
+	private boolean moveMonster(Monster m, int dir, int halfPx, boolean fling) {
 		int d = (dir & 4) == 0 ? halfPx >> 1 : (halfPx * 7 + 4) / 20;
+		if (d <= 0) {
+			return false;
+		}
 		for (int axis = 0; axis < 2; axis++) {
 			int sign = DIR_STEP[dir][axis];
 			for (int i = 0; i < d && sign != 0; i++) {
 				int off = (axis == 0 ? m.offX : m.offY) + sign;
-				if (off > 8 || off < -8) {
+				// The offset stays in -8..7 so that px >> 4 is always the cell.
+				if (off > 7 || off < -8) {
 					int nx = m.x + (axis == 0 ? sign : 0);
 					int ny = m.y + (axis == 1 ? sign : 0);
 					if (!map.inBounds(nx, ny) || block.blocks(nx, ny, fling ? 0x23 & 7 : so.u8(MONS_BLOCK + m.variant) & 7)
 							|| !fling && (monsterAt(nx, ny) != null || nx == heroX && ny == heroY)) {
-						break;
+						return false;
 					}
 					m.x = nx;
 					m.y = ny;
@@ -884,6 +1445,7 @@ final class GameCore {
 				}
 			}
 		}
+		return true;
 	}
 
 	/** A monster's position in world px: the cell centre, a script walk's progress and any push. */
@@ -903,29 +1465,153 @@ final class GameCore {
 		return heroY * TILE + TILE / 2 + heroOffY();
 	}
 
-	/** g_anMonsBlock: CollMonsPath's u8 collision mask per monster id. */
+	/**
+	 * g_anMonsBlock: CollMonsPath's u8 collision mask per monster id, tested on the block grid. 175
+	 * ids carry 0x2b and stop at the hero's terrain, 33 carry 0x02 and cross tiles without bit 1
+	 * (deep water is 5), 4 carry 0 and cross everything. The spawn footprint bits 0x08 and 0x20 are
+	 * left out: this port does not lay the footprints into the grid.
+	 */
 	private static final int MONS_BLOCK = 0xbea0c;
 
 	/**
-	 * CollMonsPath's test on the block grid with g_anMonsBlock[id]. 175 ids carry 0x2b and stop at
-	 * the hero's terrain, 33 carry 0x02 and cross tiles without bit 1 (deep water is 5), 4 carry 0
-	 * and cross everything. The spawn footprint bits 0x08 and 0x20 are left out: this port does not
-	 * lay the footprints into the grid.
+	 * AttackMonsHitHeroCore: the miss roll first (also a miss while the hero is immune or a phase
+	 * runs), the shield block, the crit, the elemental and status rolls (statuses are not ported:
+	 * a stun or knock result stands as a flinch), the flinch by the hero's act, armour wear, the
+	 * damage (at least 1) with its number at the hero's chest, a shake and the hero's reaction.
 	 */
-	private boolean monsterBlocked(Monster m, int x, int y) {
-		return block.blocks(x, y, so.u8(MONS_BLOCK + m.variant) & 7);
-	}
-
-	private void monsterStrike(Monster m) {
-		if (m.atkOnce) {
+	private void monsterHitsHero(Monster m, int scale) {
+		int hx = heroWorldX();
+		int hy = heroWorldY();
+		int roll = rng.nextInt(1000);
+		int dmg = Combat.monsterDamage(m.atk, scale, hero.armor);
+		if (roll < Math.min(hero.dodge + 200 - m.accuracy, 750) || heroImmune || events.active()) {
+			if (!heroImmune) {
+				damages.add(new int[] { hx, hy - 20, 0x40, 0, Integer.MAX_VALUE });
+			}
+			m.trig = false;
 			return;
 		}
-		m.atkOnce = true;
-		Combat.Result r = Combat.monsterHits(m.atk, Combat.swingScale(rng), m.accuracy, m.crit,
-				hero.armor, hero.dodge, rng);
-		hero.hp -= r.damage();
-		log = m.kind + "에게 " + r.damage() + " 피해를 입었다." + (r.missed() ? " 빗나감." : "");
-		knockedOutCheck();
+		if (rng.nextInt(100) < heroBlock() * 10) {
+			damages.add(new int[] { hx, hy - 20, 0x40, 0, Integer.MAX_VALUE });
+			m.trig = false;
+			return;
+		}
+		boolean crit = rng.nextInt(1000) < (m.crit < 0xffff ? Math.min(m.crit, 750) : m.crit);
+		if (!crit) {
+			dmg >>= 1;
+		}
+		// mod: 150 on normal difficulty; the elemental status roll is drawn and its effect skipped.
+		int mod = 150;
+		rng.nextInt(1000);
+		int spec = 0;
+		int a = fight.spec(m.variant) >> 4;
+		int b = fight.spec(m.variant) & 0xf;
+		if ((a == 1 || b == 1) && rng.nextInt(1000) < mod) {
+			spec = 2;
+		}
+		if (spec == 0 && (a == 2 || b == 2) && rng.nextInt(1000) < mod) {
+			spec = 3;
+		}
+		if (spec == 0 && (a == 3 || b == 3) && rng.nextInt(1000) < mod) {
+			spec = 4;
+		}
+		// The status resist roll; the hero's debuffs are not ported.
+		rng.nextInt(100);
+		if (spec == 0) {
+			int chance = heroAct >= 9 && heroAct <= 0x1c ? 0 : heroAct < 2 ? 1000 : heroAct == 7 ? 300 : 150;
+			spec = rng.nextInt(1000) < chance || crit ? 1 : 0;
+		}
+		armourWear(crit, spec);
+		if (target == null && m.uid < 0xff00) {
+			target = m;
+			targetTimer = 36;
+		}
+		dmg = Math.max(dmg, 1);
+		hero.hp -= dmg;
+		boolean lethal = hero.hp < 1;
+		int d = detailDir(m, hx, hy);
+		if (!crit && !lethal) {
+			damages.add(new int[] { hx, hy - 20, 0x40, 0, dmg });
+			addSwing(spec == 0 ? 7 : 3, d & 3);
+		} else {
+			damages.add(new int[] { hx, hy - 20, 0x80, 0, dmg });
+			addSwing(1, 0);
+		}
+		log = m.kind + "에게 " + dmg + " 피해를 입었다.";
+		m.trig = false;
+		if (lethal) {
+			// The fall (act 4) and the death popup are not ported.
+			knockedOutCheck();
+		} else if (spec != 0) {
+			heroFlinch();
+		}
+	}
+
+	/** HeroState's +0x1c8: a class-1 hero's working shield in slot 7 blocks (grade) x 10 percent. */
+	private int heroBlock() {
+		Item.Equip s = hero.inv.worn(7);
+		return hero.heroClass == 1 && s != null && s.dur != 0 ? items.shieldGrade(s.id) : 0;
+	}
+
+	/**
+	 * ChangeHeroActDamage(3): the hero flinches (act 3), which drops a queued command and ends a
+	 * swing; the next tick on it is immune until the flinch animation ends.
+	 */
+	private void heroFlinch() {
+		attackQueued = false;
+		attackRunning = false;
+		flinchBreak = false;
+		runWalking = false;
+		changeHeroAct(3);
+	}
+
+	/** Armour wear on a landed hit (not on 'n' maps): a worn helmet, armour, shoulder or class-1 shield loses durability. */
+	private void armourWear(boolean crit, int spec) {
+		if (mapCode.charAt(0) == 'n') {
+			return;
+		}
+		int amt;
+		int ch;
+		if (!crit) {
+			amt = spec == 0 ? 10 : randRange(10, 20);
+			ch = spec == 0 ? 100 : 500;
+		} else {
+			amt = randRange(20, 30);
+			ch = 1000;
+		}
+		ch += spec == 3 ? 100 : spec == 4 ? 200 : 0;
+		List<Item.Equip> worn = new ArrayList<>();
+		for (Item.Equip e : hero.inv.equip) {
+			if (e != null && (e.slot == 3 || e.slot == 4 || e.slot == 10 || e.slot == 7 && hero.heroClass == 1)) {
+				worn.add(e);
+			}
+		}
+		if (worn.isEmpty()) {
+			return;
+		}
+		Item.Equip it = worn.get(randRange(0, worn.size() - 1));
+		if (rng.nextInt(1000) >= ch) {
+			return;
+		}
+		it.dur -= amt;
+		int msg = it.slot == 7 ? 0 : it.slot == 3 ? 1 : it.slot == 4 ? 2 : 3;
+		if (it.dur < 0) {
+			it.dur = 0;
+			it.slot = 0;
+			log = String.format(fmt(WEAR_BROKEN[msg]), items.name(it.id));
+			hero.recompute(rng);
+		} else if (it.dur <= it.durMax >> 2) {
+			log = String.format(fmt(WEAR_LOW[msg]), items.name(it.id));
+		}
+	}
+
+	/** The sysline texts of a broken / worn-down shield, helmet, armour and shoulder. */
+	private static final int[] WEAR_BROKEN = { 0xd94d0, 0xd94ec, 0xd9508, 0xd9524 };
+	private static final int[] WEAR_LOW = { 0xd9548, 0xd9578, 0xd95a8, 0xd95d8 };
+
+	private String fmt(int va) {
+		String s = so.cstring(va);
+		return s == null ? "" : s;
 	}
 
 	private void knockedOutCheck() {
@@ -1009,6 +1695,7 @@ final class GameCore {
 	/** KeyPressGamePlay: a direction key sets +0x47 (repeats while held change nothing). */
 	private void hold(int dir) {
 		heldDir = dir;
+		flinchBreak = true;
 		clickX = -1;
 	}
 
@@ -1229,7 +1916,12 @@ final class GameCore {
 	 * the swing to end.
 	 */
 	private void calcHeroAttack() {
-		if (attackQueued && heroPx == 0) {
+		heroImmune = heroAct == 3 || heroAct == 0x1d || heroAct == 4;
+		// CalcHeroAct: a flinch ends with its cycle; a held direction walks on from the stand.
+		if (heroAct == 3 && heroStep == 0 && heroHeld == 0) {
+			changeHeroAct(HeroAnim.ACT_STAND);
+		}
+		if (attackQueued && heroPx == 0 && heroAct != 3) {
 			Item.Equip w = hero.inv.worn(1);
 			if (w == null || area.mapKind() == 1 && !bossLoaded) {
 				attackQueued = false;
@@ -1348,8 +2040,15 @@ final class GameCore {
 			}
 		}
 		hit.sort((a, b) -> Integer.compare(dist2(a, hx, hy), dist2(b, hx, hy)));
+		// The swing's first landed hit takes the target bar (Hero.c:285-345).
+		boolean first = true;
 		for (int i = 0; i < hit.size() && i < 50; i++) {
-			hitMonster(hit.get(i));
+			Monster m = hit.get(i);
+			if (hitMonster(m) && first && m.uid < 0xff00) {
+				first = false;
+				target = m;
+				targetTimer = 36;
+			}
 		}
 	}
 
@@ -1362,20 +2061,21 @@ final class GameCore {
 	/**
 	 * AttackHeroHitMons for a plain swing (element, race, debuffs and the boss cap aside): the
 	 * damage and its number at the monster's half height, a shake (crit pattern 2, else 7 + the
-	 * hero's facing) and the combo count. A struck monster gives chase (ChangeMonsLookDir); at
-	 * 0 HP it goes down, otherwise it flinches (state 8) when the roll beats its size's
-	 * threshold or on a crit, and is pushed away from the hero (+0x4b: 8 on a crit, else 1).
+	 * hero's facing) and the combo count. A struck monster notices the hero (ChangeMonsLookDir);
+	 * at 0 HP it goes down, otherwise it flinches (state 8) when the roll beats its size's
+	 * threshold (0 while it attacks) or on a crit, and is pushed away from the hero (+0x4b: 8 on
+	 * a crit, else 1). Returns whether the swing landed.
 	 */
-	private void hitMonster(Monster m) {
+	private boolean hitMonster(Monster m) {
 		Combat.Result r = Combat.heroHits(hero.power(), hero.accuracy, hero.crit, m.defence, m.dodge, rng);
 		int mx = monsterPx(m);
 		int my = monsterPy(m);
 		int toHero = Fight.facingToward(heroWorldX() - mx, heroWorldY() - my);
-		m.aggressive = true;
+		lookDir(m, detailDir(m, heroWorldX(), heroWorldY()));
 		if (r.missed()) {
 			damages.add(new int[] { mx, my - fight.halfY(m.variant), 0, 0, Integer.MAX_VALUE });
 			log = m.kind + "에게 빗나감.";
-			return;
+			return false;
 		}
 		int dealt = r.damage();
 		m.hp -= dealt;
@@ -1386,13 +2086,15 @@ final class GameCore {
 		log = m.kind + "에게 " + dealt + " 피해." + (r.crit() ? " 크리티!" : "");
 		if (m.hp <= 0) {
 			killMonster(m, toHero);
-			return;
+			return true;
 		}
-		if (r.crit() || rng.nextInt(1000) - hero.crit - fight.flinch(fight.size(m.variant)) < 0) {
+		int t = m.aniState == 6 ? 0 : fight.flinch(fight.size(m.variant));
+		if (r.crit() || rng.nextInt(1000) - hero.crit - t < 0) {
 			changeDir(m, 8, toHero);
 		}
 		m.pushKind = r.crit() ? 8 : 1;
 		m.pushDir = toHero ^ 1;
+		return true;
 	}
 
 	/**
@@ -1411,10 +2113,10 @@ final class GameCore {
 		m.cnt = 0;
 	}
 
-	/** AddSwing(n, dir): patterns 3 and 7 take the direction; a new pattern takes over unless one just started lower. */
+	/** AddSwing(n, dir): a new pattern takes over unless one just started lower (raw n compared); 3 and 7 add the direction. */
 	private void addSwing(int n, int dir) {
-		int p = n == 3 || n == 7 ? n + (dir & 3) : n;
-		if (swingCnt < 2 || p < swingPat) {
+		if (swingCnt < 2 || n < swingPat) {
+			int p = n == 3 || n == 7 ? n + (dir & 3) : n;
 			swingPat = p <= 10 ? p : 0;
 			swingCnt = 3;
 		}
@@ -1438,13 +2140,14 @@ final class GameCore {
 		}
 		for (int[] d : damages) {
 			int f = d[3];
-			boolean crit = (d[2] & 1) != 0;
+			// The digit set follows kind & 0x81 (hero crits 0x80 too), the burst kind & 1 alone.
+			boolean crit = (d[2] & 0x81) != 0;
 			int row = (d[2] & 0xc0) != 0 ? 2 : crit ? 0 : 1;
 			if (d[4] == Integer.MAX_VALUE) {
 				uiSprite(g, ui, 0x47, ox, oy, d[0], d[1] + so.s8(MISS_Y + f), row, so.s8(MISS_MODE + f));
 				continue;
 			}
-			if (crit && f < 8) {
+			if ((d[2] & 1) != 0 && f < 8) {
 				uiSprite(g, ui, f < 1 ? 0x45 : 0x46, ox, oy, d[0], d[1] + f, row, so.s8(NUMBER_MODE + 1 + f));
 			}
 			String s = String.valueOf(d[4]);
@@ -1515,6 +2218,48 @@ final class GameCore {
 		for (int i = 0; i < s.length(); i++) {
 			clix.sprite(g, ui, Clix.GAMEUI, (s.charAt(i) - 9) * 8, x, y, 3);
 			x += 0xb;
+		}
+	}
+
+	/** g_anMonsStateElAtk_E: u8 per monster id, its elemental attack (0 none). */
+	private static final int MONS_EL = 0xc0f94;
+
+	/**
+	 * DrawGameUI's target bar: "name Lv" centred in clix_gameui 0x5c's box over a black alpha-3
+	 * fill (an elemental monster's box is 12 px wider for its gorder 0x175.. icon), the HP bar at
+	 * 0x5d's height, red over #432a1a. The original's small font is drawn with the 16 px one.
+	 */
+	private void drawTarget(Gfx g) {
+		Monster m = target;
+		String s = m.kind + " Lv" + m.level;
+		int tw = Gfx.stringWidth(s);
+		int box = 0x5c * 8;
+		int el = so.u8(MONS_EL + m.variant);
+		int bx = (480 - (tw + 2)) / 2;
+		int bw = tw + (el == 0 ? 2 : 14);
+		int by = clix.y(Clix.GAMEUI, box);
+		int bh = clix.h(Clix.GAMEUI, box);
+		g.fillRect(bx, by, bw, bh, alpha8(3) << 24);
+		if (el != 0) {
+			int off = (0x175 + (el < 0x50 ? 0 : el < 0xa0 ? 1 : 2)) * 8;
+			try {
+				// The icon's clix offset is replaced by (4, 2).
+				clix.sprite(g, orderSheets().gorder, Clix.GORDER, off, bx + bw - 12 + 4 - clix.x(Clix.GORDER, off),
+						by + 2 + 2 - clix.y(Clix.GORDER, off));
+			} catch (IOException e) {
+				log = "그림 실패: " + e;
+			}
+		}
+		g.drawString(s, bx + 2 + (bw - 4 - tw) / 2, by + 2 + (bh - 4 - 16) / 2, 0xffe8e8e8);
+		int w = bw - 4;
+		int fill = Math.min(w, w * Math.max(m.hp, 0) / m.maxHp);
+		int yb = clix.y(Clix.GAMEUI, 0x5d * 8);
+		int hb = clix.h(Clix.GAMEUI, 0x5d * 8);
+		if (fill < w) {
+			g.fillRect(bx + fill, yb, w - fill, hb, 0xff432a1a);
+		}
+		if (fill > 0) {
+			g.fillRect(bx, yb, fill, hb, 0xffff0000);
 		}
 	}
 
@@ -1658,12 +2403,16 @@ final class GameCore {
 
 		drawTiles(g);
 
-		int from = hero.levelExp(hero.level);
-		String expText = hero.level >= Hero.MAX_LEVEL ? "MAX"
-				: (hero.exp - from) + "/" + (hero.levelExp(hero.level + 1) - from);
-		// The original bitmap font is wider than the old 12 pt one: double spaces keep this on one line.
-		g.drawString("Lv" + hero.level + " (" + expText + "EXP)  HP " + hero.hp + "/" + hero.maxHp
-				+ "  ATK " + hero.power() + "  골드 " + hero.inv.gold + "  물약 " + potionCount(), MAP_X, 5, 0xffe6dcc8);
+		boolean tbar = target != null && !events.active() && !menuOpen && !shopOpen && bossGate == null;
+		// The original's target bar sits in this top band, so this port's status line gives way to it.
+		if (!tbar) {
+			int from = hero.levelExp(hero.level);
+			String expText = hero.level >= Hero.MAX_LEVEL ? "MAX"
+					: (hero.exp - from) + "/" + (hero.levelExp(hero.level + 1) - from);
+			// The original bitmap font is wider than the old 12 pt one: double spaces keep this on one line.
+			g.drawString("Lv" + hero.level + " (" + expText + "EXP)  HP " + hero.hp + "/" + hero.maxHp
+					+ "  ATK " + hero.power() + "  골드 " + hero.inv.gold + "  물약 " + potionCount(), MAP_X, 5, 0xffe6dcc8);
+		}
 		int foot = MAP_Y + VIEW_H * CELL;
 		g.drawString(area.name + "  밝기 " + area.brightness + (area.rainy() ? "  비" : ""),
 				MAP_X, foot - 17, 0xffb4d2f0);
@@ -1672,10 +2421,13 @@ final class GameCore {
 		// One line of the 16 px font is all that fits under the log; the map keys (3..[) stay unlisted.
 		g.drawString("Enter 대화 1 공격 2 물약 I 가방 F5 저장 F9 불러오기 ESC 종료", MAP_X, OVERLAY_H + 18, 0xffaaa596);
 		boolean combo = comboShown > 1 && !menuOpen && !shopOpen && bossGate == null;
-		if (events.overlay() || bossGate != null || menuOpen || shopOpen || combo) {
+		if (events.overlay() || bossGate != null || menuOpen || shopOpen || combo || tbar) {
 			// DrawPhase and DrawGMenu work on the original 480x320 screen; fit it like the slot screen.
 			Arrays.fill(overlay.px, 0);
 			Gfx og = new Gfx(overlay);
+			if (tbar) {
+				drawTarget(og);
+			}
 			if (combo) {
 				drawCombo(og);
 			}
@@ -1894,8 +2646,11 @@ final class GameCore {
 			} else {
 				g.fillRect(cx - CELL / 2 + 4, cy - CELL / 2 + 4, CELL - 8, CELL - 8, m.color());
 			}
-			if (!m.npc && m.hp > 0) {
-				bar(g, cx - CELL / 2 + 2, cy + CELL / 2 - 5, (float) m.hp / m.maxHp, 0xffdc3c3c);
+			// DrawMonsAnim's emote (+0x2e): the bubble, then sweat, "?" (standing, walking, homing) or "!".
+			if (m.emote != 0 && !m.npc) {
+				int ey = cy - unitHeight(m) * CELL / TILE;
+				clip(g, 0x30, cx, ey);
+				clip(g, m.emote < 0 ? 0x33 : m.aniState == 1 || m.aniState == 3 || m.aniState == 0xb ? 0x32 : 0x31, cx, ey);
 			}
 		}
 		int hx = ox + heroX * CELL + CELL / 2 + heroOffX() * CELL / TILE;
@@ -1987,6 +2742,16 @@ final class GameCore {
 				m.held = 0;
 			}
 			m.aniState = state;
+			// ChangeMonsDir's side effects: the alert bubble, the flee's counters, the fling counter.
+			if (state == 5) {
+				m.emote = 18;
+			} else if (state == 10) {
+				m.fleeFrames = 0;
+				m.cnt = 0;
+				m.emote = -18;
+			} else if (state == 0xf || state == 0x10) {
+				m.cnt = 0;
+			}
 		}
 		state = m.aniState;
 		if (dir == 8) {
@@ -2061,6 +2826,13 @@ final class GameCore {
 	 * the hero's and units' fade steps. DrawUnit draws them only below fade 4, so they stop there.
 	 */
 	private void drawnFrame() {
+		for (Monster m : monsters) {
+			m.emote -= Integer.signum(m.emote);
+		}
+		// DrawGameUI: the target bar shows while frames are drawn with no phase.
+		if (target != null && !events.active() && --targetTimer <= 0) {
+			target = null;
+		}
 		if (fadeV != 0 && fadeV < 8) {
 			fadeV++;
 		}
@@ -2326,6 +3098,7 @@ final class GameCore {
 	private final class Stage implements EventRunner.World {
 		@Override
 		public void heroStop() {
+			target = null;
 			// SetPhaseHeroStop: acts 1, 0x1e and 7 go back to standing; gameTick already keeps the
 			// monsters still under a phase. A scripted walk keeps its act 1 [inferred: CalcHeroActEMove owns it].
 			if (heroGoX < 0 && (heroAct == HeroAnim.ACT_WALK || heroAct == 0x1e || heroAct == 7)) {
@@ -2489,7 +3262,7 @@ final class GameCore {
 				id = so.u8(SPAWN_SWAP + id - 0xad);
 			}
 			String name = monsterSprites.name(id);
-			Monster m = new Monster(x, y, name != null ? name : "#" + id, 1, 0, id, false, x, y, x, y);
+			Monster m = new Monster(x, y, name != null ? name : "#" + id, 1, 0, id, x, y, x, y);
 			m.uid = uid;
 			m.npc = true;
 			changeDir(m, (byte) so.u8(UNIT_ANI + id * 20) == -99 ? 1 : 0, dir == 8 ? rng.nextInt(8) : dir);
@@ -2973,12 +3746,13 @@ final class GameCore {
 			p.setProperty("heroInts", ints.toString());
 			// Units a phase spawned (uid 0x100 + n) live only as long as the scene; map units stay.
 			// A corpse is not kept: the dead are gone when the slot loads.
+			// The aggressive, idle and state columns of older saves stay as placeholders; facing is the direction.
 			p.setProperty("monsters", monsters.stream().filter(m -> m.uid < 0x100 && (m.npc || m.hp > 0))
 					.map(m -> String.join(",", String.valueOf(m.x), String.valueOf(m.y), m.kind,
 							String.valueOf(m.hp), String.valueOf(m.atk), String.valueOf(m.variant),
-							String.valueOf(m.aggressive), String.valueOf(m.loX), String.valueOf(m.loY),
-							String.valueOf(m.hiX), String.valueOf(m.hiY), String.valueOf(m.idle),
-							String.valueOf(m.state), String.valueOf(m.facing), String.valueOf(m.level),
+							"false", String.valueOf(m.loX), String.valueOf(m.loY),
+							String.valueOf(m.hiX), String.valueOf(m.hiY), "false",
+							"0", String.valueOf(m.dir), String.valueOf(m.level),
 							String.valueOf(m.defence), String.valueOf(m.accuracy), String.valueOf(m.dodge),
 							String.valueOf(m.crit), String.valueOf(m.uid)))
 					.reduce((a, b) -> a + ";" + b).orElse(""));
@@ -3056,11 +3830,9 @@ final class GameCore {
 					String[] f = row.split(",");
 					Monster m = new Monster(Integer.parseInt(f[0]), Integer.parseInt(f[1]), f[2],
 							Integer.parseInt(f[3]), Integer.parseInt(f[4]), Integer.parseInt(f[5]),
-							Boolean.parseBoolean(f[6]), Integer.parseInt(f[7]), Integer.parseInt(f[8]),
-							Integer.parseInt(f[9]), Integer.parseInt(f[10]));
-					m.idle = Boolean.parseBoolean(f[11]);
-					m.state = Integer.parseInt(f[12]);
-					m.facing = Integer.parseInt(f[13]);
+							Integer.parseInt(f[7]), Integer.parseInt(f[8]), Integer.parseInt(f[9]),
+							Integer.parseInt(f[10]));
+					int dir = Integer.parseInt(f[13]) & 7;
 					if (f.length > 18) {
 						m.level = Integer.parseInt(f[14]);
 						m.defence = Integer.parseInt(f[15]);
@@ -3073,8 +3845,10 @@ final class GameCore {
 					}
 					if (m.variant >= NPC_ID) {
 						m.npc = true;
-						m.aggressive = false;
 						changeDir(m, 1, 1);
+					} else {
+						m.chaseLen = fight.chaseLen(m.variant);
+						changeDir(m, fight.hides(m.variant) ? 0 : 1, dir);
 					}
 					monsters.add(m);
 				}
@@ -3146,11 +3920,20 @@ final class GameCore {
 		int hp;
 		final int atk;
 		final int variant;
-		boolean aggressive;
-		boolean idle;
-		int state;
-		boolean atkOnce;
-		int facing;
+		/** +0x2e: the emote bubble's frames, positive "!" or "?", negative sweat. */
+		int emote;
+		/** +0x3c: armed to decide (chase) or strike (attack); +0x3d the tile centres crossed. */
+		boolean trig;
+		int cross;
+		/** +0x35 failed routes, +0x3e flee (-1 armed), +0x30 flee frames, +0x25 HP thirds. */
+		int fails;
+		int flee;
+		int fleeFrames;
+		int hpThird = 2;
+		/** +0x46 / +0x48: the tile CalcMonsActPoint heads for; +0x2b the chase length. */
+		int tgtX;
+		int tgtY;
+		int chaseLen;
 		final int loX;
 		final int loY;
 		final int hiX;
@@ -3196,8 +3979,7 @@ final class GameCore {
 		/** +0x2d: state 0xf's fling frame, state 9's corpse decay (0..0xa0). */
 		int cnt;
 
-		Monster(int x, int y, String kind, int hp, int atk, int variant, boolean aggressive,
-				int loX, int loY, int hiX, int hiY) {
+		Monster(int x, int y, String kind, int hp, int atk, int variant, int loX, int loY, int hiX, int hiY) {
 			this.x = x;
 			this.y = y;
 			this.kind = kind;
@@ -3205,28 +3987,10 @@ final class GameCore {
 			this.maxHp = hp;
 			this.atk = atk;
 			this.variant = variant;
-			this.aggressive = aggressive;
-			this.state = aggressive ? 0 : 2;
 			this.loX = loX;
 			this.loY = loY;
 			this.hiX = hiX;
 			this.hiY = hiY;
-		}
-
-		int pixelLoX() {
-			return loX * 16;
-		}
-
-		int pixelHiX() {
-			return (loX + 1) * 16;
-		}
-
-		int pixelLoY() {
-			return loY * 16;
-		}
-
-		int pixelHiY() {
-			return (loY + 1) * 16;
 		}
 
 		/** Fallback marker colour, used only when the sprite archive cannot be decoded. */
@@ -3525,8 +4289,10 @@ final class GameCore {
 		// facing down with 낡은 단검 (form 1, delays 0 and 3: frames 0,5,3,-1,6). One press: the
 		// swing starts the next tick, the hit lands two ticks later (step f2) and the swing ends
 		// after D0 + 4 + D1 = 7 drawn frames. Pressing again in each recovery chains acts 9, 0xa,
-		// 0xf for a combo of 3. At 1 HP the monster flies four frames (state 0xf), lies as a corpse
-		// (state 9) and is freed 640 play frames later. A town (a01) and bare hands start no swing.
+		// 0xf for a combo of 3. The foe is held standing in its cell until it dies, so it neither
+		// strikes back nor drifts out of reach on the pushes, and its dodge is pinned so that no
+		// swing misses whatever the monsters drew from the RNG. At 1 HP it flies four frames (state 0xf) the way it faces, lies as a
+		// corpse (state 9) and is freed 640 play frames later. A town (a01) and bare hands start no swing.
 		loadMap("a02");
 		for (int i = 0; i < 600 && events.active(); i++) {
 			gameTick();
@@ -3536,13 +4302,13 @@ final class GameCore {
 		heroY = foe.y - 1;
 		heroPx = 0;
 		heroDir = 1;
-		foe.aggressive = true;
 		foe.hp = 100000;
+		foe.dodge = -1000;
 		int ticks = 0;
 		int hitAt = -1;
 		attackKey();
 		while (ticks < 40 && (attackQueued || attackRunning)) {
-			gameTick();
+			tickFoeHeld(foe);
 			ticks++;
 			if (hitAt < 0 && (foe.hp < 100000 || !damages.isEmpty())) {
 				hitAt = ticks;
@@ -3552,23 +4318,25 @@ final class GameCore {
 		StringBuilder acts = new StringBuilder(Integer.toHexString(lastAttackAct));
 		for (int k = 0; k < 2; k++) {
 			while (attackStep < attackFrames[1]) {
-				gameTick();
+				tickFoeHeld(foe);
 			}
 			attackKey();
-			gameTick();
+			tickFoeHeld(foe);
 			acts.append(',').append(Integer.toHexString(lastAttackAct));
 			while (attackRunning) {
-				gameTick();
+				tickFoeHeld(foe);
 			}
 		}
 		int combo = comboCount;
 		foe.hp = 1;
+		int startX = monsterPx(foe);
 		int startY = monsterPy(foe);
 		for (int t = 0; t < 120 && foe.hp > 0; t++) {
 			if (!attackQueued && !attackRunning) {
 				attackKey();
 			}
-			gameTick();
+			tickFoeHeld(foe);
+			startX = monsterPx(foe);
 			startY = monsterPy(foe);
 		}
 		int flingTicks = 0;
@@ -3576,7 +4344,7 @@ final class GameCore {
 			gameTick();
 			flingTicks++;
 		}
-		int flung = monsterPy(foe) - startY;
+		int flung = Math.abs(monsterPx(foe) - startX) + Math.abs(monsterPy(foe) - startY);
 		int expect = 0;
 		for (int n = 0; n < 4; n++) {
 			expect += fight.knock(fight.size(foe.variant), attackForm, n)[0] >> 1;
@@ -3601,6 +4369,7 @@ final class GameCore {
 		System.out.println("melee swing=" + ticks + " hit=" + hitAt + " acts=" + acts + " combo=" + combo + " fling="
 				+ flingTicks + "/" + flung + "of" + expect + "px corpse=" + (foe.aniState == 9) + " freed=" + gone + " town=" + town
 				+ " bare=" + bare);
+		aiTest(sink);
 		new GameCore(assets, storage).writeFrame(sink, "slots-after.png");
 	}
 
@@ -3611,6 +4380,84 @@ final class GameCore {
 		for (int i = 0; i < 60 && (attackQueued || attackRunning || m.aniState == 0xf); i++) {
 			gameTick();
 		}
+	}
+
+	/** Selftest: a tick with {@code foe}, while alive, put back standing at its cell centre so it neither strikes nor drifts. */
+	private void tickFoeHeld(Monster foe) {
+		int x = foe.x;
+		int y = foe.y;
+		gameTick();
+		if (foe.hp > 0) {
+			foe.x = x;
+			foe.y = y;
+			foe.offX = 0;
+			foe.offY = 0;
+			changeDir(foe, 1, foe.dir);
+		}
+	}
+
+	/**
+	 * Selftest of CalcMonsAct: on a02 the hero stands three cells in front of a monster. It sees
+	 * the hero (alert "!" or straight to battle), chases to its attack side, attacks, and its
+	 * strike lands or misses; a landed strike takes the target bar. Then, with the hero gone far
+	 * away, every monster ends inside its patrol window or heads home (state 0xb).
+	 */
+	private void aiTest(FrameSink sink) throws IOException {
+		loadMap("a02");
+		for (int i = 0; i < 600 && events.active(); i++) {
+			gameTick();
+		}
+		hero.hp = hero.maxHp;
+		Monster foe = nearestMonster();
+		heroX = foe.x + DIR_STEP[foe.dir & 3][0] * 3;
+		heroY = foe.y + DIR_STEP[foe.dir & 3][1] * 3;
+		heroPx = 0;
+		int seen = -1;
+		int chase = -1;
+		int attack = -1;
+		int struck = -1;
+		int flinch = -1;
+		int hp0 = hero.hp;
+		for (int t = 1; t <= 300 && (struck < 0 || flinch < 0); t++) {
+			gameTick();
+			int st = foe.aniState;
+			if (seen < 0 && (st == 5 || st == 2)) {
+				seen = t;
+				writeFrame(sink, "ai-alert.png");
+			}
+			if (chase < 0 && st == 4) {
+				chase = t;
+			}
+			if (attack < 0 && st == 6) {
+				attack = t;
+			}
+			if (struck < 0 && (hero.hp < hp0 || !damages.isEmpty() && damages.get(damages.size() - 1)[2] == 0x40)) {
+				struck = t;
+				writeFrame(sink, "ai-hit.png");
+			}
+			if (flinch < 0 && heroAct == 3) {
+				flinch = t;
+				writeFrame(sink, "ai-flinch.png");
+			}
+			hero.hp = Math.max(hero.hp, 1);
+		}
+		boolean targeted = target == foe;
+		int hp1 = hero.hp;
+		hero.hp = hero.maxHp;
+		heroX = 0;
+		heroY = 0;
+		int home = 0;
+		for (int t = 0; t < 1500; t++) {
+			gameTick();
+		}
+		for (Monster m : monsters) {
+			if (!m.npc && (inWindow(m) || m.aniState == 0xb)) {
+				home++;
+			}
+		}
+		System.out.println("ai seen=" + seen + " chase=" + chase + " attack=" + attack + " struck=" + struck + " hp="
+				+ hp0 + "->" + hp1 + " flinch=" + flinch + " target=" + targeted + " home=" + home + "/"
+				+ monsters.stream().filter(m -> !m.npc).count());
 	}
 
 	private void writeFrame(FrameSink sink, String name) throws IOException {
@@ -3650,14 +4497,14 @@ final class GameCore {
 		return x + "," + y + "->" + heroX + "," + heroY + " dir=" + heroDir;
 	}
 
-	/** Selftest: one aggressive monster of {@code id} at (27,9), the hero at (29,9), one monsterTick; its x. */
+	/** Selftest: a monster of {@code id} at (27,9) takes a 16 px step right toward the hero at (29,9); its x. */
 	private int chaseFrom(int id) {
 		monsters.clear();
-		Monster m = new Monster(27, 9, "#" + id, 1, 0, id, true, 25, 7, 29, 11);
+		Monster m = new Monster(27, 9, "#" + id, 1, 0, id, 25, 7, 29, 11);
 		monsters.add(m);
 		heroX = 29;
 		heroY = 9;
-		monsterTick();
+		moveMonster(m, 3, 32, false);
 		return m.x;
 	}
 }

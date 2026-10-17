@@ -129,9 +129,125 @@ final class Fight {
 		return o;
 	}
 
+	/** GetDegree: the angle of (dx, dy) as a u16, 0 = +x and 0x4000 = +y (down); exact on the axes, (0, 0) gives 0xc000. */
+	static int degree(int dx, int dy) {
+		if (dx == 0) {
+			return dy > 0 ? 0x4000 : 0xc000;
+		}
+		if (dy == 0) {
+			return dx > 0 ? 0 : 0x8000;
+		}
+		return (int) Math.round(Math.atan2(dy, dx) / (2 * Math.PI) * 65536) & 0xffff;
+	}
+
 	/** g_aAdjDir[((GetDegree(dx, dy) + 0x2000) &amp; 0xffff) &gt;&gt; 14]: the facing toward an offset. */
 	static int facingToward(int dx, int dy) {
-		int deg = (int) Math.round(Math.atan2(dy, dx) / (2 * Math.PI) * 65536);
-		return ADJ_DIR[((deg + 0x2000) & 0xffff) >> 14];
+		return ADJ_DIR[((degree(dx, dy) + 0x2000) & 0xffff) >> 14];
 	}
+
+	/** ChangeMonsDetailDir: the 8-way direction toward an offset, g_aAdjDir (0xb9860) {3,7,1,5,2,6,0,4}. */
+	static int detailDir(int dx, int dy) {
+		return ADJ_DIR8[((degree(dx, dy) + 0x1000) & 0xffff) >> 13];
+	}
+
+	private static final int[] ADJ_DIR8 = { 3, 7, 1, 5, 2, 6, 0, 4 };
+	private static final int SPEED = 0xbfca8;
+	private static final int ATT_FRM = 0xbeae0;
+	private static final int ATTACK = 0xc00c8;
+	private static final int ATT_BOAR = 0xc05f8;
+	private static final int LOOK = 0xe5f30;
+	private static final int WAIT_CNT = 0xbe640;
+	private static final int MOVE_CNT = 0xbe714;
+	private static final int CHASE_LEN = 0xbe8bc;
+	private static final int STATE_COND = 0xc1574;
+	private static final int BODY = 0xc0830;
+	private static final int MASK = 0xbe5e8;
+	private static final int TURN = 0xbcab8;
+	private static final int ACT = 0xbec2c;
+	private static final int SPEC = 0xc14cc;
+	private static final int BULLET = 0xbe964;
+
+	/** g_anMonsSpeed[id*5 + k] in half px a frame: k 0 walk, 1 chase and flee, 2 alert, 3 attack lunge, 4 script walk. */
+	int speed(int id, int k) {
+		return so.s8(SPEED + id * 5 + k);
+	}
+
+	/** g_anMonsAttFrm_E: the inclusive animation steps {lo, hi} in which an attack strikes. */
+	int[] attackSteps(int id) {
+		return new int[] { so.s8(ATT_FRM + id * 2), so.s8(ATT_FRM + id * 2 + 1) };
+	}
+
+	/** g_arcMonsAttack_E[id*8 + row*4]: the attack's Rect8 {x0, y0, x1, y1}; row 1 when the hero is above. */
+	int[] attackRect(int id, int row) {
+		return rect8(ATTACK + id * 8 + row * 4);
+	}
+
+	/** g_arcMonsAttBoar[row*4]: the strike rectangle of the boars (ids with StateCond &amp; 6). */
+	int[] boarRect(int row) {
+		return rect8(ATT_BOAR + row * 4);
+	}
+
+	private int[] rect8(int at) {
+		return new int[] { so.s8(at), so.s8(at + 1), so.s8(at + 2), so.s8(at + 3) };
+	}
+
+	/** g_arcMonsLook_E: s16 {a, b, c, d} per id, which MainApp multiplies by 8 at load (px). */
+	int[] look(int id) {
+		int at = LOOK + id * 8;
+		return new int[] { so.s16(at) * 8, so.s16(at + 2) * 8, so.s16(at + 4) * 8, so.s16(at + 6) * 8 };
+	}
+
+	/** g_anMonsWaitCnt / g_anMonsMoveCnt: stand and walk cycles, RandRange(low nibble, high nibble). */
+	int waitCount(int id) {
+		return so.u8(WAIT_CNT + id);
+	}
+
+	int moveCount(int id) {
+		return so.u8(MOVE_CNT + id);
+	}
+
+	/** g_anMonsChaseLen_E: how far GetMonsRouting may lead a chase. */
+	int chaseLen(int id) {
+		return so.u8(CHASE_LEN + id);
+	}
+
+	/** g_anMonsStateCond_K: 0x01 burrows, 0x06 boar 8-way attack, 0x10 group aggro, 0x40 flees at low HP. */
+	int cond(int id) {
+		return so.u8(STATE_COND + id);
+	}
+
+	/** g_aptMonsBlock_L: the body {width, height} in tiles of a monster kind. */
+	int bodyW(int kind) {
+		return Math.max(1, so.s8(BODY + kind * 2));
+	}
+
+	int bodyH(int kind) {
+		return Math.max(1, so.s8(BODY + kind * 2 + 1));
+	}
+
+	/** g_anMonsMask_L: the directions a monster kind may face, bit c for g_anMonsTurnDir column c. */
+	int mask(int kind) {
+		return so.u8(MASK + kind);
+	}
+
+	/** g_anMonsTurnDir[dir*8 + c]: the turning order from a direction. */
+	int turn(int dir, int c) {
+		return so.s8(TURN + dir * 8 + c);
+	}
+
+	/** g_anMonsAct[id*20] is -99 when the id has no hidden (state 0) animation. */
+	boolean hides(int id) {
+		return so.s8(ACT + id * 20) != -99;
+	}
+
+	/** g_anMonsStateSpec_E: two nibbles of on-hit statuses (1 stun, 2 knockdown, 3 knockback, ...). */
+	int spec(int id) {
+		return so.u8(SPEC + id);
+	}
+
+	/** g_anMonsAttBullet_E: 0 for a melee attacker. */
+	int bullet(int id) {
+		return so.u8(BULLET + id);
+	}
+
 }

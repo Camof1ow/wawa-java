@@ -12,13 +12,13 @@ import java.util.Random;
  *   miss when rand1000 &lt; min(dodge + 200 - accuracy, 750)
  *   crit when rand1000 &lt; min(crit, 750), otherwise dmg &gt;&gt;= 1
  *
- * AttackMonsHitHeroCore (monster -&gt; hero)
+ * AttackMonsHitHeroCore (monster -&gt; hero), the damage here and the rolls in GameCore
  *   r    = FixSqrt(defence * 256)                        sqrt(defence) in 8.8 fixed point
  *   dmg  = (100 - round(min(r * 65 / 100, 75.0))) * attack / 100 - round(r * 40 / 100)
  *   dmg  = dmg * scale / 1000                            CalcMonsRun: rand(900..1100) for a plain
  *                                                        swing (state 6), rand(2700..3300) for state 7
- *   miss when rand1000 &lt; min(dodge + 200 - accuracy, 750)
- *   crit when rand1000 &lt; min(crit, 750), otherwise dmg &gt;&gt;= 1
+ *   miss when rand1000 &lt; min(dodge + 200 - accuracy, 750), always capped; then the shield block,
+ *   crit when rand1000 &lt; min(crit, 750), otherwise dmg &gt;&gt;= 1; a landed hit does at least 1
  * </pre>
  *
  * 65534 and above mark an unset value; the engine leaves those uncapped.
@@ -44,13 +44,15 @@ public final class Combat {
 		return resolve(dmg, dodge + 200 - accuracy, crit, rng);
 	}
 
-	public static Result monsterHits(int attack, int scale, int accuracy, int crit, int defence, int dodge,
-			Random rng) {
+	/**
+	 * AttackMonsHitHeroCore's damage before the rolls: the hero's defence through FixSqrt, then the
+	 * swing scale. The caller draws the miss, block, crit and status rolls in the original's order.
+	 */
+	public static int monsterDamage(int attack, int scale, int defence) {
 		int r = fixSqrt(defence * 256);
 		int pct = Math.min(r * 65 / 100, 0x4b00);
 		int dmg = (100 - (pct + 0x80 >> 8)) * attack / 100 - (r * 40 / 100 + 0x80 >> 8);
-		dmg = dmg * scale / 1000;
-		return resolve(dmg, dodge + 200 - accuracy, crit, rng);
+		return dmg * scale / 1000;
 	}
 
 	private static Result resolve(int dmg, int missChance, int crit, Random rng) {

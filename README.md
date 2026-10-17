@@ -25,7 +25,11 @@ logic is re-derived from the native code, and every format is decoded from the s
 - **World map, grid movement, real-time melee, save/load**: the attack key swings the original's
   combo (acts 9, 0xa, 0xf) on its weapon timing tables, hitting every monster whose hurtbox meets
   the swing; struck monsters flinch and are pushed, dead ones fly off and lie as corpses
-  (`Fight`, `GameCore`), with the original's damage numbers and combo counter.
+  (`Fight`, `GameCore`), with the original's damage numbers, combo counter and target HP bar.
+- **Monster AI** (`CalcMonsAct`): hiding, standing and patrolling inside the spawn window, sight
+  rectangles with the "!" bubble, breadth-first routing to the attack side, attacks that roll hit,
+  shield block, crit and flinch in the original's order, fleeing at low HP; the hero flinches
+  when struck and its armour wears.
 - **Terrain**: each map's collision grid is built as LoadGameBlock builds it, from the tile sets'
   `g_anTileBlock` tables in `libwawa.so` (`BlockGrid`). Deep water, cliffs, cave walls and lava
   stop the hero; shallow water and bridges do not. Walking into a blocking tile steps aside to
@@ -53,9 +57,9 @@ logic is re-derived from the native code, and every format is decoded from the s
   and the quest board (GOrder 8); a script that reaches one logs `[미포팅]` and carries on.
   Boss/regen map exits do open their warning (GMenu 0x74) and enter on its Enter button.
 - **Animation playback.** Poses for any state and step are composed (`MonsterAnim.pose`,
-  `HeroAnim.pose`). Monsters animate their flinch, death and corpse states, but their AI (idle,
-  wander, alert, chase and attack states) is still the port's cell-stepping one; the hero draws
-  its stand, walk, sit and melee acts (skills and riding are not ported).
+  `HeroAnim.pose`). Monsters animate every normal state (hide, stand, walk, alert, chase, attack,
+  flinch, flee, death, corpse); the hero draws its stand, walk, sit, melee and flinch acts
+  (skills and riding are not ported).
 - **Palette variants** (`LoadSpritePal`), `.mbk` object/portal tables.
 
 ## Requirements
