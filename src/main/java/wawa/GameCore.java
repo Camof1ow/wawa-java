@@ -129,6 +129,10 @@ final class GameCore {
 		public void close() {
 			menuOpen = false;
 			shopOpen = false;
+			// ExitGOrder: closing the menu ends 갈무리 early.
+			if (heroAct == 2) {
+				lootEnd();
+			}
 		}
 
 		@Override
@@ -216,6 +220,27 @@ final class GameCore {
 	/** wawamain's target monster and its HP bar's frames (36 after each landed hit). */
 	private Monster target;
 	private int targetTimer;
+	/**
+	 * 갈무리 (act 2): the corpse (hero+0x9a), cycles left and in all (+0x59a0, +0x59a8), the
+	 * charge (+0x45, 12 frames a cycle), the corpse's decay before the lock (+0x599c), the rune
+	 * allowance (+0x59b0), the facing to give back (+6) and the gauge's start frame (+0x80, -1 off).
+	 */
+	private Monster loot;
+	private int lootLeft;
+	private int lootCycles;
+	private int lootCharge;
+	private int lootDecay;
+	private int runeLeft;
+	private int lootFacing;
+	private int gaugeStart = -1;
+	/** wawamain+0x5998: frames the attack key has been held with the living near, 0 off. */
+	private int holdTimer;
+	/** The attack key is down: its autorepeat is not a press. */
+	private boolean attackDown;
+	/** wawamain+0x5cf4: the corpse the hero stands on this tick; +0x5d00 the OK bubble's tracker and the step it shows (-1 none). */
+	private Monster lootable;
+	private int okTrack;
+	private int okStage = -1;
 	/** wawamain+0xfc: frames played with no phase running, which corpse decay counts. */
 	private int playFrames;
 	private Fight fight;
@@ -451,6 +476,12 @@ final class GameCore {
 	private void loadMap(String code) throws IOException {
 		mapCode = code;
 		target = null;
+		if (heroAct == 2) {
+			stopLoot();
+		}
+		lootable = null;
+		okStage = -1;
+		holdTimer = 0;
 		String letter = code.substring(0, 1);
 		map = MapData.load(assets, "assets/eng/map/" + letter + ".png", code);
 		block = new BlockGrid(map, so);
@@ -523,6 +554,7 @@ final class GameCore {
 	/** One CalcGamePlay tick in the original order. */
 	private void gameTick() {
 		frames++;
+		lootable = null;
 		drawnFrame();
 		tickEffects();
 		calcCamera();
@@ -540,7 +572,7 @@ final class GameCore {
 			frozen = false;
 			heroGoX = -1;
 			heroActRun = false;
-			if (!runWalking && !attackRunning && heroAct != 3) {
+			if (!runWalking && !attackRunning && heroAct != 3 && heroAct != 2) {
 				heroPx = 0;
 				if (heroAct != HeroAnim.ACT_STAND) {
 					changeHeroAct(HeroAnim.ACT_STAND);
@@ -554,6 +586,13 @@ final class GameCore {
 			calcHeroRun();
 			postValues();
 			attackHero();
+			// The attack key held 9 frames with the living near: CheckHeroOnLoot from a stand,
+			// a walk or a swing.
+			if (holdTimer != 0 && ++holdTimer > 8 && (heroAct < 2 || heroAct > 8 && heroAct < 0x11)) {
+				checkHeroOnLoot();
+				holdTimer = 0;
+			}
+			okStage = lootable == null ? -1 : okFrame();
 		}
 		drawSetup();
 	}
@@ -570,9 +609,10 @@ final class GameCore {
 	 * turning mid-step takes at most one frame longer than the original's free pixel position.
 	 */
 	private void calcHeroRun() {
-		if (attackRunning || heroAct == 3 && !flinchBreak && heroPx == 0) {
-			// Direction input waits while a swing plays (KeyPressGamePlay drops it); a flinch keeps
-			// the hero still until it ends, unless a direction is pressed afresh during it.
+		if (attackRunning || heroAct == 2 || heroAct == 3 && !flinchBreak && heroPx == 0) {
+			// Direction input waits while a swing plays (KeyPressGamePlay drops it); 갈무리 holds
+			// the hero, and a flinch keeps it still until it ends, unless a direction is pressed
+			// afresh during it.
 			return;
 		}
 		if (heroPx == 0) {
@@ -832,10 +872,7 @@ final class GameCore {
 		} else if (st == 0xf) {
 			fling(m);
 		} else if (st == 9) {
-			// Named corpses never decay in the original; this port does not mark named units.
-			if (m.fade == 0 && (playFrames & 3) == 0 && ++m.cnt >= 0xa0) {
-				m.fade = 1;
-			}
+			corpse(m);
 		} else if (st != 0 && cyc) {
 			if (st == 6 || st == 7) {
 				changeDir(m, (fight.bullet(m.variant) == 2 || fight.bullet(m.variant) == 3) && ++m.cnt < 3 ? 6 : 0x11, m.dir);
@@ -1558,11 +1595,42 @@ final class GameCore {
 	 * swing; the next tick on it is immune until the flinch animation ends.
 	 */
 	private void heroFlinch() {
+		// ChangeHeroActDamage: a flinch never interrupts 갈무리.
+		if (heroAct == 2) {
+			return;
+		}
 		attackQueued = false;
 		attackRunning = false;
 		flinchBreak = false;
 		runWalking = false;
 		changeHeroAct(3);
+	}
+
+	/**
+	 * CalcMonsAct state 9: an unlocked corpse decays a step every 4 play frames up to 0xa0 and
+	 * then fades; the first one the hero (standing, walking or sitting) is on gets the OK bubble.
+	 * A locked one (0xfb, which 갈무리 renews each tick) turns 0xfc and fades once nobody renews
+	 * it. Named, elite and boss corpses never decay in the original; this port marks none.
+	 */
+	private void corpse(Monster m) {
+		if (m.cnt >= 0xfb) {
+			if (m.cnt < 0xfc) {
+				m.cnt++;
+			} else if (m.fade < 1) {
+				m.fade = 1;
+			}
+			return;
+		}
+		if (m.cnt < 0xa0) {
+			if ((playFrames & 3) == 0) {
+				m.cnt++;
+			}
+		} else if (m.fade < 1) {
+			m.fade = 1;
+		}
+		if (lootable == null && (heroAct < 2 || heroAct == 7) && corpseOn(m, heroWorldX(), heroWorldY())) {
+			lootable = m;
+		}
 	}
 
 	/** Armour wear on a landed hit (not on 'n' maps): a worn helmet, armour, shoulder or class-1 shield loses durability. */
@@ -1616,6 +1684,9 @@ final class GameCore {
 
 	private void knockedOutCheck() {
 		if (hero.hp <= 0) {
+			if (heroAct == 2) {
+				lootCancel();
+			}
 			hero.hp = hero.maxHp;
 			hero.inv.gold = Math.max(0, hero.inv.gold - 50);
 			heroX = 10;
@@ -1669,7 +1740,12 @@ final class GameCore {
 			case Keys.UP, Keys.W -> hold(0);
 			case Keys.DOWN, Keys.S -> hold(1);
 			case Keys.ENTER, Keys.SPACE -> talkToNpc();
-			case Keys.K1 -> attackKey();
+			case Keys.K1 -> {
+				if (!attackDown) {
+					attackDown = true;
+					attackKey();
+				}
+			}
 			case Keys.K2 -> drinkPotion();
 			case Keys.F5 -> save();
 			case Keys.F9 -> load();
@@ -1692,15 +1768,28 @@ final class GameCore {
 		}
 	}
 
-	/** KeyPressGamePlay: a direction key sets +0x47 (repeats while held change nothing). */
+	/**
+	 * KeyPressGamePlay: a direction key sets +0x47. A key's autorepeat is not a press: only a
+	 * fresh one breaks a flinch or ends 갈무리 early.
+	 */
 	private void hold(int dir) {
+		boolean fresh = heldDir != dir;
 		heldDir = dir;
-		flinchBreak = true;
 		clickX = -1;
+		if (fresh) {
+			flinchBreak = true;
+			if (heroAct == 2) {
+				lootEnd();
+			}
+		}
 	}
 
-	/** The key's release: letting go of the held direction clears +0x47. */
+	/** The key's release: letting go of the held direction clears +0x47, letting go of attack {@link #releaseAttack}. */
 	void keyUp(int code) {
+		if (code == Keys.K1) {
+			releaseAttack();
+			return;
+		}
 		int dir = switch (code) {
 			case Keys.UP, Keys.W -> 0;
 			case Keys.DOWN, Keys.S -> 1;
@@ -1716,6 +1805,24 @@ final class GameCore {
 	/** The window lost focus: no release will arrive for a key still down. */
 	void releaseKeys() {
 		heldDir = -1;
+		releaseAttack();
+	}
+
+	/**
+	 * KeyReleaseGamePlay for the attack key: the hold timer stops; 갈무리 is cancelled in its
+	 * first 4 frames (the corpse keeps its decay, nothing is gathered) and ended early after that.
+	 */
+	private void releaseAttack() {
+		attackDown = false;
+		holdTimer = 0;
+		if (heroAct != 2) {
+			return;
+		}
+		if (lootLeft == lootCycles && lootCharge < 4) {
+			lootCancel();
+		} else {
+			lootEnd();
+		}
 	}
 
 	private static int keyToMapIndex(int code) {
@@ -1746,7 +1853,9 @@ final class GameCore {
 		}
 		Monster target = monsterAt(gx, gy);
 		if (target != null && !target.npc && Math.abs(gx - heroX) <= 1 && Math.abs(gy - heroY) <= 1) {
+			// A click is a tap: pressed and let go.
 			attackKey();
+			holdTimer = 0;
 		} else {
 			// Walked to frame by frame by CalcHeroRun, like a held direction.
 			clickX = gx;
@@ -1866,13 +1975,284 @@ final class GameCore {
 
 	/**
 	 * KeyPressGamePlay's attack key (-5 / '5'; this port's 1): with no chain running,
-	 * CheckHeroOnMons turns the hero toward monsters in reach; the swing is queued (+0x47 = 5).
+	 * CheckHeroOnMons turns the hero toward monsters in reach. With none alive within 48 px a
+	 * corpse in reach starts 갈무리 at once; otherwise the swing is queued (+0x47 = 5), and with
+	 * the living near the hold timer starts.
 	 */
 	private void attackKey() {
 		if (!attackRunning && chainHits == 0) {
 			aim();
 		}
+		int hx = heroWorldX();
+		int hy = heroWorldY();
+		int[] box = { hx - 48, hy - 48, hx + 48, hy + 48 };
+		boolean near = false;
+		for (Monster m : monsters) {
+			near |= targetable(m) && fight.hits(box, m.variant, monsterPx(m), monsterPy(m));
+		}
+		if (!near && checkHeroOnLoot()) {
+			return;
+		}
 		attackQueued = true;
+		if (near) {
+			holdTimer = 1;
+		}
+	}
+
+	/**
+	 * CheckHeroOnLoot: in acts below 8, 9 and above 0x1c, the first unlocked corpse whose hurtbox
+	 * meets the hero's ±24 px box starts 갈무리 (act 2, ending a swing and a queued command):
+	 * size + 1 cycles of 12 frames, the hero turned to the corpse's centre, the corpse locked
+	 * (decay 0xfb) and the gauge on. Elite (+2) and boss (5) cycle counts are not ported.
+	 */
+	private boolean checkHeroOnLoot() {
+		if (heroAct >= 8 && heroAct <= 0x1c && heroAct != 9) {
+			return false;
+		}
+		int hx = heroWorldX();
+		int hy = heroWorldY();
+		for (Monster m : monsters) {
+			if (!corpseOn(m, hx, hy)) {
+				continue;
+			}
+			int[] b = fight.blow(m.variant, monsterPx(m), monsterPy(m));
+			int cx = b[0] + ((b[2] - b[0]) >> 1);
+			int cy = b[1] + ((b[3] - b[1]) >> 1);
+			lootFacing = heroDir;
+			attackQueued = false;
+			attackRunning = false;
+			runWalking = false;
+			changeHeroAct(2);
+			lootCycles = fight.size(m.variant) + 1;
+			lootLeft = lootCycles;
+			runeLeft = 1;
+			lootCharge = 0;
+			loot = m;
+			heroDir = cy < hy ? (cx < hx ? 2 : 0) : (hx < cx ? 3 : 1);
+			gaugeStart = frames;
+			lootDecay = m.cnt;
+			m.cnt = 0xfb;
+			return true;
+		}
+		return false;
+	}
+
+	/** A corpse (id &lt; 0xa5, state 9, not fading, not summoned, unlocked) whose hurtbox meets the ±24 px box around (hx, hy). */
+	private boolean corpseOn(Monster m, int hx, int hy) {
+		return m.variant < 0xa5 && m.aniState == 9 && m.fade < 1 && m.uid < 0xff00 && m.cnt < 0xfb
+				&& fight.hits(new int[] { hx - 24, hy - 24, hx + 24, hy + 24 }, m.variant, monsterPx(m), monsterPy(m));
+	}
+
+	/** Ending 갈무리 early (a direction, an attack, the menu closing, the key let go): the last call gathers with the charge so far. */
+	private void lootEnd() {
+		lootLeft = lootLeft == 1 ? 0 : -1;
+		gather();
+	}
+
+	/** KeyReleaseGamePlay / SetPhaseHeroStop: 갈무리 stops with nothing gathered, the corpse's decay given back plus the charge. */
+	private void lootCancel() {
+		if (loot != null && loot.aniState == 9) {
+			loot.cnt = lootDecay + lootCharge;
+		}
+		stopLoot();
+	}
+
+	/** ChangeHeroAct(0), the facing from before 갈무리 back, the gauge off. */
+	private void stopLoot() {
+		changeHeroAct(HeroAnim.ACT_STAND);
+		heroDir = lootFacing;
+		gaugeStart = -1;
+		loot = null;
+	}
+
+	/** g_anMonsDrop: u16 per monster id, the first g_anMonsItem entry (bits 0-11) and how many (12-15). */
+	private static final int MONS_DROP = 0xcbb94;
+	/** g_anMonsItem: u16 material ids of tier 0; the tier is added to the id. */
+	private static final int MONS_ITEM = 0xcbe2c;
+	/** g_anRuneDrop: 26 descending s16 bounds over 0..10000 that turn a weighted roll into a rune tier. */
+	private static final int RUNE_DROP = 0xba5cc;
+	/** g_anRuneProb: s8 tier per rune r (item 0x12d + r), 77 runes. */
+	private static final int RUNE_PROB = 0xba4dc;
+	/** g_aEquipGrade: the grade names a recipe's line starts with. */
+	private static final int EQUIP_GRADE = 0xe5dbc;
+	private static final int GATHER_FAIL = 0xdcc6c;
+	private static final int GATHER_ITEM = 0xdcc8c;
+	/** The full-bag texts: equipment, belt, material, etc., recipe book. */
+	private static final int[] BAG_FULL = { 0xdccb0, 0xdcce8, 0xdcd10, 0xdcd48, 0xdcd7c };
+
+	/**
+	 * GetItemHeroGather(0) on the corpse, once a cycle and when 갈무리 ends early; the last call
+	 * starts its fade. Under 5 frames of charge half the calls fail (bubble 3); otherwise 1-2,
+	 * 2-3 or 3 items by the charge, of one tier weighted by the monster's level. The first slot
+	 * may instead hold a rune (2 percent, one a corpse) or a recipe (20 percent), which end the
+	 * list; the rest are the monster's materials. Equal ids merge and AddItem forces them in.
+	 * Quest drops, the luck stat (hero+0x1ec), pets and elite/boss chances are not ported. A last
+	 * cycle of three items with no bag full shows bubble 0xb; then the hero stands again.
+	 */
+	private void gather() {
+		Monster c = loot;
+		int n = 0;
+		boolean full = false;
+		if (c != null && monsters.contains(c) && c.aniState == 9 && c.fade < 1) {
+			if (lootLeft < 1) {
+				c.fade = 1;
+			}
+			int fail = lootCharge < 5 ? 500 : 0;
+			n = lootCharge < 9 ? randRange(1, 2) : lootCharge < 12 ? randRange(2, 3) : 3;
+			List<String> lines = new ArrayList<>();
+			if (rng.nextInt(1000) < fail) {
+				new Stage().emote(EventRunner.HERO, 3);
+				lines.add(fmt(GATHER_FAIL));
+			} else {
+				int lv = c.level;
+				int[] w = new int[4];
+				for (int k = 0; k < 4; k++) {
+					w[k] = Math.max(0, 16 - Math.abs(lv - 22 * k - 13));
+				}
+				if (w[0] + w[1] + w[2] == 0) {
+					w[3] = 16;
+				}
+				int r = randRange(0, w[0] + w[1] + w[2] + w[3] - 1);
+				int tier = 0;
+				while (tier < 3 && (r -= w[tier]) >= 0) {
+					tier++;
+				}
+				int grade = tier;
+				int[] ids = new int[n];
+				int[] counts = new int[n];
+				Arrays.fill(ids, -1);
+				Arrays.fill(counts, 1);
+				for (int j = 0; j < n; j++) {
+					if (j == 0) {
+						boolean rune = rng.nextInt(1000) < 20;
+						if (runeLeft != 0 && rune) {
+							int x = randWeight10000(lv * 25 + 3500);
+							int i = 0;
+							while (i < 0x19 && (so.s16(RUNE_DROP + i * 2) <= x || x < so.s16(RUNE_DROP + i * 2 + 2))) {
+								i++;
+							}
+							ids[0] = itemRune(i);
+							runeLeft--;
+							break;
+						}
+						if (rng.nextInt(1000) < 200) {
+							List<Integer> recipes = new ArrayList<>();
+							for (int id = 0x8c; id < 0xe8; id++) {
+								int l = items.level(id);
+								if (l - 4 <= lv && (lv <= l + 4 || id > 0xb3 && id < 0xb8)) {
+									recipes.add(id);
+								}
+							}
+							if (!recipes.isEmpty()) {
+								ids[0] = recipes.get(randRange(0, recipes.size() - 1)) + 0xee;
+								int base = 80;
+								int x = randRange(0, base);
+								int t4 = 0x61;
+								int t3 = 0x5a;
+								if (base > 100) {
+									t4 = (base * 19 - 0x5ca) / 22 + 0x4e;
+									t3 = (base * 12 - 0x3a8) / 22 + 0x4e;
+								}
+								grade = x > t4 ? 4 : x > t3 ? 3 : x >= 0x4f ? 2 : x >= 0x33 ? 1 : 0;
+								break;
+							}
+						}
+					}
+					int d = so.u16(MONS_DROP + c.variant * 2);
+					// Ids with no materials (0xa3, 0xa4) would divide by zero in the original.
+					if (d >> 12 > 0) {
+						ids[j] = so.u16(MONS_ITEM + ((d & 0xfff) + randRange(0, (d >> 12) - 1)) * 2) + tier;
+					}
+				}
+				for (int j = 1; j < n; j++) {
+					for (int k = j - 1; k >= 0 && ids[j] >= 0; k--) {
+						if (ids[j] == ids[k]) {
+							ids[j] = -1;
+							counts[k]++;
+						}
+					}
+				}
+				int bits = 0;
+				for (int j = 0; j < n; j++) {
+					if (ids[j] < 0) {
+						continue;
+					}
+					int left = hero.inv.add(ids[j], counts[j], grade, true, rng);
+					int t = items.type(ids[j]);
+					if (left != 0) {
+						full = true;
+						bits |= t >= 1 && t <= 0xc ? 1 : t == 0xe || t == 0xf ? 2 : t == 0xd ? 4 : t == 0x13 ? 0x10 : 8;
+					}
+					if (left >= 0) {
+						String name = items.name(ids[j]);
+						if (t == 0x13) {
+							name = so.cstring(so.u32(EQUIP_GRADE + grade * 4)) + " " + name;
+						}
+						// The sysline's colour codes (\a>, \a0) and indent are dropped for the log line.
+						lines.add(String.format(fmt(GATHER_ITEM).replaceAll("\u0007.", "").trim(), name, counts[j]));
+					}
+				}
+				events.searchPhase();
+				for (int b = 0; b < BAG_FULL.length; b++) {
+					if ((bits >> b & 1) != 0) {
+						lines.add(fmt(BAG_FULL[b]));
+					}
+				}
+			}
+			log = String.join("  ", lines);
+		}
+		if (lootLeft == 0 && n == 3 && !full) {
+			new Stage().emote(EventRunner.HERO, 0xb);
+		}
+		if (lootLeft < 1) {
+			stopLoot();
+		}
+	}
+
+	/**
+	 * RandWeight10000(p): x in 0..9999 kept with probability falling linearly in x, steeper as p
+	 * drops below 10000; above it the low end thins instead.
+	 */
+	private int randWeight10000(int p) {
+		int lo = p < 10001 ? (p - 10000) * 2 + 10000 : 10000;
+		int hi = p < 10001 ? 10000 : (10000 - p) * 2 + 10000;
+		while (true) {
+			int x = rng.nextInt(10000);
+			int t = hi * x / 10000;
+			if (rng.nextInt(10000) < lo - t + hi) {
+				return x;
+			}
+		}
+	}
+
+	/** GetItemRune(tier): a random rune (item 0x12d + r) of that g_anRuneProb tier, or -1. */
+	private int itemRune(int tier) {
+		List<Integer> runes = new ArrayList<>();
+		for (int r = 0; r < 0x4d; r++) {
+			if (so.s8(RUNE_PROB + r) == tier) {
+				runes.add(r);
+			}
+		}
+		return runes.isEmpty() ? -1 : runes.get(randRange(0, runes.size() - 1)) + 0x12d;
+	}
+
+	/** DrawImoticonOK's tracker (+0x5d00) on the frame count: shown on consecutive frames the OK bubble pops in over three (0, 1, then 2 = full). */
+	private int okFrame() {
+		int fc = frames;
+		if (okTrack + 1 == fc) {
+			okTrack = fc;
+			return 2;
+		}
+		if (okTrack + 2 == fc) {
+			okTrack = fc;
+			return 1;
+		}
+		if (okTrack + 3 == fc) {
+			okTrack = fc - 1;
+			return 0;
+		}
+		okTrack = fc - 2;
+		return -1;
 	}
 
 	/**
@@ -1920,6 +2300,21 @@ final class GameCore {
 		// CalcHeroAct: a flinch ends with its cycle; a held direction walks on from the stand.
 		if (heroAct == 3 && heroStep == 0 && heroHeld == 0) {
 			changeHeroAct(HeroAnim.ACT_STAND);
+		}
+		// CalcHeroAct's 갈무리 tick: the corpse re-locked, a gather every 12 frames.
+		if (heroAct == 2) {
+			if (loot != null && loot.aniState == 9) {
+				loot.cnt = 0xfb;
+			}
+			if (++lootCharge > 11) {
+				lootLeft--;
+				gather();
+				lootCharge = 0;
+			}
+		}
+		// InitHeroAttack: an attack during 갈무리 ends it early, then swings.
+		if (heroAct == 2 && attackQueued) {
+			lootEnd();
 		}
 		if (attackQueued && heroPx == 0 && heroAct != 3) {
 			Item.Equip w = hero.inv.worn(1);
@@ -2099,16 +2494,11 @@ final class GameCore {
 
 	/**
 	 * ChangeMonsDown(m, facing the hero): the experience now, then state 0xf, the fling away
-	 * from the hero. The gold and the odd 하급 포션 are this port's until harvesting is ported.
+	 * from the hero. A kill gives nothing else; 갈무리 on the corpse gives the loot.
 	 */
 	private void killMonster(Monster m, int toHero) {
-		int reward = 20 + rng.nextInt(40);
-		hero.inv.gold += reward;
 		int levels = hero.gainExp(hero.expFor(m.level, false), rng);
-		if (rng.nextInt(3) == 0) {
-			hero.inv.add(POTION, 1, 0, false, rng);
-		}
-		log += " 처치. 골드 +" + reward + (levels > 0 ? " 레벨 " + hero.level + " 달성!" : "");
+		log += " 처치." + (levels > 0 ? " 레벨 " + hero.level + " 달성!" : "");
 		changeDir(m, 0xf, toHero);
 		m.cnt = 0;
 	}
@@ -2677,12 +3067,49 @@ final class GameCore {
 				drawEmote(g, e, ox + m.x * CELL + CELL / 2, oy + m.y * CELL + CELL / 2 - unitHeight(m) * CELL / TILE);
 			}
 		}
+		// AddImoticon(hero, 0xc) / DrawImoticonOK: the OK bubble over the hero on a corpse.
+		if (okStage >= 0) {
+			int ey = hy - 0x28 * CELL / TILE;
+			if (okStage < 2) {
+				clip(g, okStage, hx, ey);
+			} else {
+				clip(g, 2, hx, ey);
+				clip(g, 0x2a, hx, ey);
+				clip(g, (frames & 2) == 0 ? 0x2c : 0x2b, hx, ey);
+			}
+		}
 		drawDamages(g, ox, oy);
+		drawGauge(g, ox, oy);
 		if (fadeV != 0) {
 			int a = alpha8(Math.abs(fadeV)) << 24;
 			g.fillRect(MAP_X, MAP_Y, VIEW_W * CELL, VIEW_H * CELL, fadeWhite ? a | 0xffffff : a);
 		}
 		g.setClip(clip);
+	}
+
+	/**
+	 * DrawGameUI's 갈무리 gauge (gameui 0x4b at half strength, 0x4a, then 0x4c.. one per tenth)
+	 * 40 px over the hero, kept 7 px inside the view's top; from its 5th frame on.
+	 */
+	private void drawGauge(Gfx g, int ox, int oy) {
+		if (gaugeStart < 0 || gaugeStart >= frames || heroAct != 2 || lootLeft == lootCycles && lootCharge <= 3) {
+			return;
+		}
+		Gsac ui;
+		try {
+			ui = orderSheets().gameui;
+		} catch (IOException e) {
+			return;
+		}
+		int t = lootCycles * 12;
+		int k = Math.max(0, Math.min(10, (10 * (frames - gaugeStart + 1) + t / 2) / t));
+		int wx = heroWorldX();
+		int wy = Math.max((MAP_Y - oy) * TILE / CELL + 7, heroWorldY() - 40);
+		uiSprite(g, ui, 0x4b, ox, oy, wx, wy, 0, 2);
+		uiSprite(g, ui, 0x4a, ox, oy, wx, wy, 0, 0);
+		for (int i = 0; i < k; i++) {
+			uiSprite(g, ui, 0x4c + i, ox, oy, wx, wy, 0, 0);
+		}
 	}
 
 	/**
@@ -3099,6 +3526,10 @@ final class GameCore {
 		@Override
 		public void heroStop() {
 			target = null;
+			// SetPhaseHeroStop: 갈무리 stops with nothing gathered.
+			if (heroAct == 2) {
+				lootCancel();
+			}
 			// SetPhaseHeroStop: acts 1, 0x1e and 7 go back to standing; gameTick already keeps the
 			// monsters still under a phase. A scripted walk keeps its act 1 [inferred: CalcHeroActEMove owns it].
 			if (heroGoX < 0 && (heroAct == HeroAnim.ACT_WALK || heroAct == 0x1e || heroAct == 7)) {
@@ -4307,6 +4738,7 @@ final class GameCore {
 		int ticks = 0;
 		int hitAt = -1;
 		attackKey();
+		releaseAttack();
 		while (ticks < 40 && (attackQueued || attackRunning)) {
 			tickFoeHeld(foe);
 			ticks++;
@@ -4321,6 +4753,7 @@ final class GameCore {
 				tickFoeHeld(foe);
 			}
 			attackKey();
+			releaseAttack();
 			tickFoeHeld(foe);
 			acts.append(',').append(Integer.toHexString(lastAttackAct));
 			while (attackRunning) {
@@ -4334,6 +4767,7 @@ final class GameCore {
 		for (int t = 0; t < 120 && foe.hp > 0; t++) {
 			if (!attackQueued && !attackRunning) {
 				attackKey();
+				releaseAttack();
 			}
 			tickFoeHeld(foe);
 			startX = monsterPx(foe);
@@ -4357,12 +4791,14 @@ final class GameCore {
 		}
 		loadMap("a01");
 		attackKey();
+		releaseAttack();
 		gameTick();
 		boolean town = attackRunning;
 		loadMap("a02");
 		Item.Equip held = hero.inv.worn(1);
 		held.slot = 0;
 		attackKey();
+		releaseAttack();
 		gameTick();
 		boolean bare = attackRunning;
 		held.slot = 1;
@@ -4370,6 +4806,7 @@ final class GameCore {
 				+ flingTicks + "/" + flung + "of" + expect + "px corpse=" + (foe.aniState == 9) + " freed=" + gone + " town=" + town
 				+ " bare=" + bare);
 		aiTest(sink);
+		lootTest(sink);
 		new GameCore(assets, storage).writeFrame(sink, "slots-after.png");
 	}
 
@@ -4377,9 +4814,80 @@ final class GameCore {
 	private void strike(Monster m) {
 		heroDir = Fight.facingToward(monsterPx(m) - heroWorldX(), monsterPy(m) - heroWorldY());
 		attackKey();
+		releaseAttack();
 		for (int i = 0; i < 60 && (attackQueued || attackRunning || m.aniState == 0xf); i++) {
 			gameTick();
 		}
+	}
+
+	/**
+	 * Selftest of 갈무리: on a02 the hero kills a lone monster and stands over its corpse, where
+	 * the OK bubble pops in (step 2 after three frames). A tap is cancelled within 4 frames: the
+	 * decay comes back plus the 2 frames held and nothing is gathered. Held, the attack key
+	 * gathers every 12 frames for size + 1 cycles, the corpse fades and is freed, and the bag
+	 * holds more of the monster's materials (unless a rune or recipe took the first slot).
+	 */
+	private void lootTest(FrameSink sink) throws IOException {
+		loadMap("a02");
+		for (int i = 0; i < 600 && events.active(); i++) {
+			gameTick();
+		}
+		Monster foe = nearestMonster();
+		monsters.removeIf(m -> m != foe && !m.npc);
+		heroX = foe.x;
+		heroY = foe.y - 1;
+		heroPx = 0;
+		foe.offX = 0;
+		foe.offY = 0;
+		foe.hp = 1;
+		foe.dodge = -1000;
+		strike(foe);
+		// The corpse flew off: step over to the cell above it.
+		heroX = foe.x;
+		heroY = foe.y - 1;
+		for (int i = 0; i < 4; i++) {
+			gameTick();
+		}
+		int ok = okStage;
+		writeFrame(sink, "loot-ok.png");
+		int decay = foe.cnt;
+		key(Keys.K1);
+		boolean started = heroAct == 2;
+		gameTick();
+		gameTick();
+		keyUp(Keys.K1);
+		boolean cancelled = started && heroAct != 2 && foe.cnt == decay + 2 && foe.fade == 0;
+		int before = materials(foe.variant);
+		key(Keys.K1);
+		int ticks = 0;
+		while (heroAct == 2 && ticks < 200) {
+			gameTick();
+			if (++ticks == 8) {
+				writeFrame(sink, "loot.png");
+			}
+		}
+		String got = log;
+		int after = materials(foe.variant);
+		keyUp(Keys.K1);
+		int freed = 0;
+		while (monsters.contains(foe) && freed < 20) {
+			gameTick();
+			freed++;
+		}
+		System.out.println("loot ok=" + ok + " cancel=" + cancelled + " cycles=" + lootCycles + " ticks=" + ticks
+				+ " items=" + before + "->" + after + " freed=" + freed + " log=" + got);
+	}
+
+	/** Selftest: how many of a monster id's materials, of any tier, the bag holds. */
+	private int materials(int id) {
+		int d = so.u16(MONS_DROP + id * 2);
+		int n = 0;
+		for (int j = 0; j < d >> 12; j++) {
+			for (int t = 0; t < 4; t++) {
+				n += hero.inv.count(so.u16(MONS_ITEM + ((d & 0xfff) + j) * 2) + t, -1);
+			}
+		}
+		return n;
 	}
 
 	/** Selftest: a tick with {@code foe}, while alive, put back standing at its cell centre so it neither strikes nor drifts. */

@@ -30,6 +30,9 @@ logic is re-derived from the native code, and every format is decoded from the s
   rectangles with the "!" bubble, breadth-first routing to the attack side, attacks that roll hit,
   shield block, crit and flinch in the original's order, fleeing at low HP; the hero flinches
   when struck and its armour wears.
+- **Harvesting (갈무리)**: holding the attack key over a corpse plays act 2 with its gauge, one
+  gather every 12 frames per size class, rolling materials (`g_anMonsDrop`/`g_anMonsItem`), runes
+  and recipes as GetItemHeroGather does; kills give experience only.
 - **Terrain**: each map's collision grid is built as LoadGameBlock builds it, from the tile sets'
   `g_anTileBlock` tables in `libwawa.so` (`BlockGrid`). Deep water, cliffs, cave walls and lava
   stop the hero; shallow water and bridges do not. Walking into a blocking tile steps aside to

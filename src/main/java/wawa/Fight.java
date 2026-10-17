@@ -91,6 +91,12 @@ final class Fight {
 		return r[0] < mx + so.s8(at + 2) && mx + so.s8(at) < r[2] && r[1] < my + so.s8(at + 3) && my + so.s8(at + 1) < r[3];
 	}
 
+	/** g_arcMonsBlow_LE's hurtbox {x0, y0, x1, y1} of a monster id standing at (mx, my). */
+	int[] blow(int id, int mx, int my) {
+		int at = BLOW + kind(id) * 4;
+		return new int[] { mx + so.s8(at), my + so.s8(at + 1), mx + so.s8(at + 2), my + so.s8(at + 3) };
+	}
+
 	int size(int id) {
 		return so.s8(SIZE + kind(id));
 	}
