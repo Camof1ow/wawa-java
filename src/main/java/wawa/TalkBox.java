@@ -49,8 +49,11 @@ final class TalkBox {
 	/** DrawTalkAnimate's T1V: below 0 hides a face while it is being swapped. */
 	private static final int[] SWAP_VISIBLE = { -1, 3, 2, 1, 0 };
 
-	/** What the box is showing: nothing, dialogue (4), caption (6), notice (7), choice (8) or GMenu 0x74's warning. */
-	enum Kind { NONE, TALK, CAPTION, NOTICE, CHOICE, WARNING }
+	/** What the box is showing: nothing, dialogue (4), caption (6), notice (7), choice (8), GMenu 0x74's warning, GMenu 100 / 0x67 or a 900+ message. */
+	enum Kind { NONE, TALK, CAPTION, NOTICE, CHOICE, WARNING, QUEST, MESSAGE }
+
+	/** GMenu 100 / 0x67's buttons: the main quest's "닫기", a sub or free quest's 예 / 아니오, the detail view's "확인". */
+	static final int CLOSE = 0, YES_NO = 1, CONFIRM_ONE = 2;
 
 	/** SetTextboxColor of the notice and choice text, also DrawTextOut's button outline. */
 	private static final int MENU_TEXT = 0x1a2a4300;
@@ -117,6 +120,8 @@ final class TalkBox {
 	private List<int[]> headLines = List.of();
 	private int headTimer;
 	private byte[] headNext;
+	/** GMenu 100 / 0x67: the body line (gmenu+0x98, none for 0x67) and the button set. */
+	private byte[] questBody;
 
 	TalkBox(Assets assets, ElfImage so) throws IOException {
 		this.so = so;
@@ -225,6 +230,65 @@ final class TalkBox {
 		return -1;
 	}
 
+	/**
+	 * InitGMenu 100 (style 3): the quest title, the summary in a white text box (clix_gmenu+0x50,
+	 * 215 x 102, 16 px pitch, six lines a page) and the body line "퀘스트를 수락합니다." /
+	 * "퀘스트가 갱신되었습니다." at +0x58; with no body, GMenu 0x67's box +0x40 (215 x 130, 17 px).
+	 */
+	void startQuest(byte[] title, byte[] body, byte[] summary, int buttons) {
+		clear();
+		kind = Kind.QUEST;
+		warnTitle = title;
+		questBody = body;
+		choiceLabels = buttons == YES_NO ? new byte[][] { so.cbytes(0xd2ab4), so.cbytes(0xd2be4) }
+				: new byte[][] { so.cbytes(buttons == CLOSE ? 0xd2a48 : 0xd2a28) };
+		cursor = 0;
+		setText(summary, 0, 215);
+	}
+
+	/**
+	 * InitGMenu 900.. (style 0): a message (clix_gmenu+0x178, 202 wide, centred across) with
+	 * "확인", or, given a second label, "확인" / "취소" with the cursor on the first.
+	 */
+	void startMessage(byte[] body, byte[] cancel) {
+		clear();
+		kind = Kind.MESSAGE;
+		choiceLabels = cancel == null ? new byte[][] { so.cbytes(0xd2a28) } : new byte[][] { so.cbytes(0xd2a28), cancel };
+		cursor = 0;
+		setText(body, 0, 202);
+	}
+
+	/**
+	 * KeyPressGMenu for GMenu 100, 0x67 and the 900 messages: OK gives ResultGMenu(cursor == 0)
+	 * with two buttons and 1 otherwise, the back key 0; left / right swap two buttons; up / down
+	 * page the quest text box (KeyPressTextbox). Returns 1, 0, or -1 while the menu stays.
+	 */
+	int gmenuKey(int code) {
+		boolean two = choiceLabels.length == 2;
+		if (ok(code)) {
+			return two ? cursor == 0 ? 1 : 0 : 1;
+		}
+		if (code == Keys.ESCAPE || code == Keys.BACK_SPACE) {
+			return 0;
+		}
+		if (two && (code == Keys.LEFT || code == Keys.RIGHT || code == Keys.K4 || code == Keys.K6)) {
+			cursor ^= 1;
+		} else if (kind == Kind.QUEST) {
+			int page = questPage();
+			if (code == Keys.UP || code == Keys.K2) {
+				top = Math.max(0, top - page);
+			} else if ((code == Keys.DOWN || code == Keys.K8) && page < lines.size() && top < lines.size() - page) {
+				top += page;
+			}
+		}
+		return -1;
+	}
+
+	/** Lines a page of the quest text box holds: (h + pitch - 15) / pitch. */
+	private int questPage() {
+		return questBody != null ? (102 + 16 - 15) / 16 : (130 + 17 - 15) / 17;
+	}
+
 	/** AddHeadline: shown at once when none is up, otherwise it replaces the one queued text. */
 	void headline(byte[] d, int off, int len) {
 		byte[] t = slice(d, off, len);
@@ -233,6 +297,11 @@ final class TalkBox {
 		} else {
 			headNext = t;
 		}
+	}
+
+	/** AddHeadline(.., 0): replaces whatever headline is showing. */
+	void headlineNow(byte[] t) {
+		showHeadline(t);
 	}
 
 	/** AddHeadlinePure: lines break at 480; 1a sets the talk state to 6, so it shows whole. */
@@ -575,6 +644,8 @@ final class TalkBox {
 			case NOTICE -> drawNotice(g);
 			case CHOICE -> drawChoice(g);
 			case WARNING -> drawWarning(g);
+			case QUEST -> drawQuest(g);
+			case MESSAGE -> drawMessage(g);
 			default -> {
 			}
 		}
@@ -652,7 +723,12 @@ final class TalkBox {
 
 	/** DrawString: EUC-KR pairs and ASCII through the original font, "\x07 d" switches colour. */
 	private void drawBytes(Gfx g, byte[] s, int from, int len, int x, int y, int defaultColor) {
-		int argb = rgb(defaultColor);
+		drawBytes(g, s, from, len, x, y, defaultColor, defaultColor);
+	}
+
+	/** The same, starting in {@code startColor} (a scrolled text box's top line), '0' still giving the default. */
+	private void drawBytes(Gfx g, byte[] s, int from, int len, int x, int y, int defaultColor, int startColor) {
+		int argb = rgb(startColor);
 		for (int i = from; i < from + len && i < s.length && s[i] != 0; i++) {
 			int c = s[i] & 0xff;
 			if (c == 7) {
@@ -748,6 +824,75 @@ final class TalkBox {
 		}
 		button(g, choiceLabels[0], 160, 220, cursor == 0);
 		button(g, choiceLabels[1], 290, 220, cursor == 1);
+	}
+
+	/**
+	 * DrawGMenu 100 / 0x67: back and title (style 3), black 3/8 over clix_gmenu+0x48 (+0x38 for
+	 * 0x67), the body line in {@link #MENU_TEXT} centred in +0x58, the white text box page from
+	 * its top line, DrawGMenuScroll's bar in +0xb0 (372, 75, 5, 140) when there is a second page,
+	 * and the buttons: "닫기" / "확인" in the middle slot, or 예 (cursor 0) and 아니오 (cursor 1).
+	 */
+	private void drawQuest(Gfx g) {
+		menuBack3(g, warnTitle);
+		boolean offer = questBody != null;
+		g.fillRect(145, 75, 225, offer ? 120 : 140, (3 * 32) << 24);
+		if (offer) {
+			drawBytes(g, questBody, 0, questBody.length, 150 + ((215 - width(questBody, 0, questBody.length)) >> 1), 198, MENU_TEXT);
+		}
+		int pitch = offer ? 16 : 17;
+		int page = questPage();
+		for (int k = 0; k < page && top + k < lines.size(); k++) {
+			int[] ln = lines.get(top + k);
+			// FindTextboxColor: a scrolled box starts in the colour its top line opens with.
+			drawBytes(g, text, ln[0], ln[1], 150, 80 + k * pitch, 0xffffff00, colourAt(ln[0]));
+		}
+		int steps = (lines.size() - 1) / page;
+		if (steps > 0) {
+			int h = 140;
+			g.fillRect(372, 75, 5, h, rgb(0x6b99c700));
+			int len = steps >= 11 ? h / 10 : h / (steps + 1);
+			g.fillRect(372, 75 + top / page * (h - len) / steps, 5, len, rgb(0x1c548c00));
+		}
+		if (choiceLabels.length == 2) {
+			button(g, choiceLabels[0], 160, 220, cursor == 0);
+			button(g, choiceLabels[1], 290, 220, cursor == 1);
+		} else {
+			button(g, choiceLabels[0], 225, 220, true);
+		}
+	}
+
+	/** The colour code last switched to before {@code at} (white when none), as a 0xBBGGRR00 value. */
+	private int colourAt(int at) {
+		int colour = 0xffffff00;
+		for (int i = 0; i < at; i++) {
+			if (text[i] == 7) {
+				int digit = text[++i] & 0xff;
+				colour = digit == '0' ? 0xffffff00 : so.u32(TEXT_COLOR + (digit - '1') * 4);
+			} else if ((text[i] & 0xff) >= 0x80) {
+				i++;
+			}
+		}
+		return colour;
+	}
+
+	/**
+	 * DrawGMenu for a style-0 message: black 3/8, imenu frame 3 at clix_imenu+0x18 (140, 100),
+	 * the text in {@link #MENU_TEXT} centred across from the top of +0x178 (160, 109, 202, 38) at
+	 * a 16 px pitch, and the style-0 buttons at y 150 (+0x180 .. +0x190).
+	 */
+	private void drawMessage(Gfx g) {
+		g.fillRect(0, 0, W, H, (3 * 32) << 24);
+		g.drawImage(imenu.frame(3), 140, 100);
+		for (int k = 0; k < Math.min(lines.size(), (38 + 16 - 15) / 16); k++) {
+			int[] ln = lines.get(k);
+			drawBytes(g, text, ln[0], ln[1], 160 + ((202 - width(text, ln[0], ln[1])) >> 1), 109 + 16 * k, MENU_TEXT);
+		}
+		if (choiceLabels.length == 2) {
+			button(g, choiceLabels[0], 160, 150, cursor == 0);
+			button(g, choiceLabels[1], 290, 150, cursor == 1);
+		} else {
+			button(g, choiceLabels[0], 225, 150, true);
+		}
 	}
 
 	/** DrawGMenuBack and DrawGMenuTitle for a style-3 GMenu (0x74, the shop's popups). */

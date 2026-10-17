@@ -21,14 +21,19 @@ import java.io.IOException;
  */
 final class EventScript {
 
-	/** One event table: the blob, each event's start and its status byte (0 until it has run). */
+	/**
+	 * One event table: the blob, each event's start and its status byte (0 until it has run). The
+	 * quest book's table instead lists each quest's reward phase directly (no event headers).
+	 */
 	static final class Table {
 		final byte[] d;
 		final int[] offs;
 		final byte[] status;
+		private final int[] phases;
 
 		Table(byte[] blob) {
 			d = blob;
+			phases = null;
 			int n = blob.length < 2 ? 0 : ResourceFile.u16(blob, 0);
 			offs = new int[n];
 			status = new byte[n];
@@ -41,6 +46,13 @@ final class EventScript {
 					p += phaseLen(blob, p);
 				}
 			}
+		}
+
+		Table(byte[] blob, int[] phases) {
+			d = blob;
+			offs = phases;
+			status = new byte[phases.length];
+			this.phases = phases;
 		}
 
 		int count() {
@@ -59,6 +71,9 @@ final class EventScript {
 
 		/** The phase body this event runs: its own, or the referenced event's. */
 		int phase(int i) {
+			if (phases != null) {
+				return phases[i];
+			}
 			int ref = eventRef(d, offs[i]);
 			int p = ref < 0 ? offs[i] : offs[ref];
 			return p + eventLen(d, p);

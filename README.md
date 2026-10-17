@@ -33,6 +33,10 @@ logic is re-derived from the native code, and every format is decoded from the s
 - **Harvesting (갈무리)**: holding the attack key over a corpse plays act 2 with its gauge, one
   gather every 12 frames per size class, rolling materials (`g_anMonsDrop`/`g_anMonsItem`), runes
   and recipes as GetItemHeroGather does; kills give experience only.
+- **Quests** (`QuestBook`, `Quests`): the 265 quest definitions of `dat/quesn`, the hero's seven
+  slots, GMenu 100 offers (main quests confirm, sub and free quests accept or decline), kill,
+  condition, item and time goals, quest drops rolled during 갈무리, turn-in with the reward phase,
+  and the quest-status conditions the event scripts test.
 - **Terrain**: each map's collision grid is built as LoadGameBlock builds it, from the tile sets'
   `g_anTileBlock` tables in `libwawa.so` (`BlockGrid`). Deep water, cliffs, cave walls and lava
   stop the hero; shallow water and bridges do not. Walking into a blocking tile steps aside to
@@ -131,6 +135,7 @@ npx http-server web    # or any static server; the page asks for your wild.apk o
 | `src/main/java/wawa/{MonsterTable,MonsterData,MonsterStats,MonsterSprite,MonsterAnim}.java` | monsters |
 | `src/main/java/wawa/{PartSprites,HeroAnim}.java` | dat part composition shared by monsters and the hero; hero outfit layers |
 | `src/main/java/wawa/{EventScript,EventRunner,TalkBox}.java` | event tables and length rules, the phase interpreter, the dialogue box |
+| `src/main/java/wawa/{QuestBook,Quests}.java` | quest definitions and reward phases, the hero's quest slots, goal checks and quest drops |
 | `src/main/java/wawa/{Hero,Item,Inventory,Combat,Fight}.java` | hero record, item tables, the hero's items, hit resolution, melee tables and hit geometry |
 | `src/main/java/wawa/{Gsac,RenderAtlas,ElfImage,ResourceFile}.java` | asset decoding |
 | `src/main/java/wawa/{CheckMaps,CheckMapsRun,ExtractAll,MatchSprite,FindBySize}.java` | tools |

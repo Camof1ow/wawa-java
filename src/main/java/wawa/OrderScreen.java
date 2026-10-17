@@ -28,6 +28,9 @@ abstract class OrderScreen {
 
 		void close();
 
+		/** CheckQuestItem(id, n) after AddItem took n of id. */
+		void itemAdded(int id, int n);
+
 		void notPorted(String what);
 	}
 

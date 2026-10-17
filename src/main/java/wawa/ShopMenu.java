@@ -326,9 +326,12 @@ final class ShopMenu extends OrderScreen {
 				return;
 			}
 			inv.equip[i].origin = 1;
+			host.itemAdded(e.id, 1);
 		} else if (inv.add(e.id, qty, -1, false, rng) < 0) {
 			message(0x386);
 			return;
+		} else {
+			host.itemAdded(e.id, qty);
 		}
 		inv.sort();
 		inv.gold -= cost;

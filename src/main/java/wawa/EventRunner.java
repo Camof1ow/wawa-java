@@ -146,6 +146,24 @@ final class EventRunner {
 
 		/** Lo 2: GOrderFuncUp(0xd) in shop mode {@code mode} over grades first..last. */
 		void openShop(int mode, int first, int last);
+
+		/** 21: GMenuFuncUp(100) offering quest id; the phase waits until it closes. */
+		void questOffer(int id);
+
+		/** 31's slot test: the flags of the slot holding quest id, -1 when no slot does. */
+		int questFlags(int id);
+
+		/** 31 after its reward phase: the slot empties and the quest's state byte is set. */
+		void questTurnIn(int id);
+
+		/** 31 when the reward phase could not give its items: GMenuFuncUp(0x386). */
+		void questBagFull();
+
+		/** CheckCondition 0x14..0x17 on quest x. */
+		int questCondition(int op, int x);
+
+		/** ExitPhase with nothing left to run: AnalysisQuest and its completion headlines. */
+		void questPhaseEnd();
 	}
 
 	private static final class Entry {
@@ -166,6 +184,8 @@ final class EventRunner {
 	final TalkBox talk;
 	EventScript.Table local = EventScript.EMPTY;
 	EventScript.Table global = EventScript.EMPTY;
+	/** The quest book's reward phases, ExecPhase's type 1. */
+	EventScript.Table quest = EventScript.EMPTY;
 	private final List<Entry> stack = new ArrayList<>();
 	/** wawamain+0x5f34: 0 normal, 1 fast ('#'), 2 skip (AnalysisPhaseSave 5). */
 	int mode;
@@ -231,7 +251,7 @@ final class EventRunner {
 	}
 
 	private EventScript.Table table(int type) {
-		return type == GLOBAL ? global : local;
+		return type == GLOBAL ? global : type == QUEST ? quest : local;
 	}
 
 	// ---- triggers --------------------------------------------------------------------------
@@ -302,10 +322,6 @@ final class EventRunner {
 
 	/** ExecPhase(type, idx, run). */
 	int execPhase(int type, int idx, boolean run) {
-		if (type == QUEST) {
-			w.notPorted("퀘스트 phase");
-			return 3;
-		}
 		EventScript.Table t = table(type);
 		int depth = stack.size();
 		instance[depth] = (byte) (instanceCounter + 1);
@@ -348,11 +364,17 @@ final class EventRunner {
 	/**
 	 * ExecPhase's result-3 loop: closes the entries running now. The last close may start a new
 	 * phase through SearchPhase; that one is left running (the original's loop runs one past).
+	 * A GMenu's frame state 3 (a declined quest, no slot left) ends the same way.
 	 */
-	private void abortAll() {
+	void abortAll() {
 		for (int n = stack.size(); n > 0 && !stack.isEmpty(); n--) {
 			exitPhase(stack.get(stack.size() - 1), 3);
 		}
+	}
+
+	/** wawamain+0x5f30: how many phases are running. */
+	int depth() {
+		return stack.size();
 	}
 
 	/** ExitPhase(e, r). */
@@ -386,6 +408,7 @@ final class EventRunner {
 			w.reloadEvents();
 			searchPhase();
 		} else if (!searchPhase()) {
+			w.questPhaseEnd();
 			// No phase took over: the screen comes back from whatever fade the phase left.
 			w.fadeRestore();
 		}
@@ -524,14 +547,31 @@ final class EventRunner {
 						cont = true;
 					} else if (hi == 2) {
 						w.heroStop();
-						w.notPorted("GMenu 100(" + id + ")");
+						w.questOffer(id);
 						// GMenuFuncUp(100) leaves through the opcode-x2 exit: next line, end of frame.
 						e.pc++;
 						return 0;
 					} else if (hi == 3) {
-						// The finish only acts on a quest in the hero's seven slots; the port has no
-						// quests, so the slot search finds none and the line passes like the original's.
-						w.notPorted("퀘스트 완료(" + id + ")");
+						// No slot holds the quest: the line passes. A slot that is not complete
+						// closes the stack; otherwise the reward phase runs, and a reward the bag
+						// cannot take (3) brings up GMenu 0x386 and keeps the quest.
+						int f = w.questFlags(id);
+						if (f >= 0) {
+							if ((f & 0xc0) != 0x40) {
+								return 3;
+							}
+							int r = execPhase(QUEST, id, true);
+							if (r == 3) {
+								w.questBagFull();
+								return 3;
+							}
+							w.questTurnIn(id);
+							if (r == 0 || r == 8) {
+								e.pc++;
+								return result;
+							}
+							cont = true;
+						}
 					}
 				}
 				case 2 -> {
@@ -1115,7 +1155,7 @@ final class EventRunner {
 			case 0x11 -> (x & 1 << (y & 0xff)) == 0 ? 1 : 0;
 			case 0x12 -> x;
 			case 0x13 -> x == 0 ? 1 : 0;
-			// 0x14..0x17 test quest slots and quest status; the port has no quests.
+			case 0x14, 0x15, 0x16, 0x17 -> w.questCondition(op, x);
 			default -> 0;
 		};
 	}

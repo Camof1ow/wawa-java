@@ -133,6 +133,15 @@ final class GameCore {
 			if (heroAct == 2) {
 				lootEnd();
 			}
+			// GOrderFuncFree with no phase running: the quests look again (an item sold or used).
+			if (events.depth() == 0) {
+				quests.analyze();
+			}
+		}
+
+		@Override
+		public void itemAdded(int id, int n) {
+			quests.itemAdded(id, n);
 		}
 
 		@Override
@@ -244,6 +253,8 @@ final class GameCore {
 	/** wawamain+0xfc: frames played with no phase running, which corpse decay counts. */
 	private int playFrames;
 	private Fight fight;
+	/** The quest slots and state bytes (hero+0x398, quest+0x10) over dat/quesn. */
+	private Quests quests;
 	private Clix clix;
 	/** DrawAndDestroyDamage's per-frame tables: MISS y and mode, number mode, crit and normal number y. */
 	private static final int MISS_Y = 0xdb2a0;
@@ -318,6 +329,7 @@ final class GameCore {
 		items = new Item(so);
 		fight = new Fight(so);
 		clix = new Clix(so);
+		quests = new Quests(QuestBook.load(assets, false), so, new QuestLink());
 		newHero(0, "");
 
 		// The world behind the slot screen is not drawn until a slot is opened, but the rest of
@@ -327,6 +339,7 @@ final class GameCore {
 		talk = new TalkBox(assets, so);
 		events = new EventRunner(new Stage(), talk);
 		events.global = EventScript.global(assets);
+		events.quest = quests.book.phases;
 		imoticon = Gsac.loadCompanion(assets, "assets/img/imoticon.png");
 		slotScreen = new SlotScreen(assets, so, items, readSummaries());
 		ready = true;
@@ -382,6 +395,8 @@ final class GameCore {
 		heroInts = new int[0x100];
 		hero.recompute(rng);
 		hero.hp = hero.maxHp;
+		quests.reset();
+		quests.heroClass = heroClass;
 	}
 
 	/**
@@ -543,16 +558,76 @@ final class GameCore {
 		EventScript.Table global = events.global;
 		events = new EventRunner(new Stage(), talk);
 		events.global = global;
+		events.quest = quests.book.phases;
 	}
 
-	/** LoadGameMap with a non-zero mode, then ExitShiftMap's SearchPhase. */
+	/** LoadGameMap with a non-zero mode, then ExitShiftMap's SearchPhase; with none started, AnalysisQuest. */
 	private void enterEvents() {
 		events.loadMap(EventScript.map(assets, mapCode));
-		events.searchPhase();
+		if (!events.searchPhase()) {
+			quests.analyze();
+		}
 	}
 
-	/** One CalcGamePlay tick in the original order. */
+	/** GMenu 100 (a quest offer) or a 900+ message over the field, 0 when none; game and phase wait while one is up. */
+	private int gmenu;
+	/** GMenu 100's quest (gmenu+0x2c). */
+	private int gmenuQuest;
+
+	/**
+	 * InitGMenu 100: the quest's title, the summary of a temporary InitQuest (which also says
+	 * the time left on timed quests held), "퀘스트가 갱신되었습니다." with "닫기" for a main quest,
+	 * "퀘스트를 수락합니다." with 예 / 아니오 otherwise.
+	 */
+	private void questOffer(int id) {
+		QuestBook.Def def = quests.def(id);
+		Quests.Slot tmp = new Quests.Slot();
+		quests.init(tmp, id, true);
+		boolean main = def.kind() == 0;
+		talk.startQuest(def.title, so.cbytes(main ? 0xd21c8 : 0xd219c), quests.summary(tmp, true),
+				main ? TalkBox.CLOSE : TalkBox.YES_NO);
+		gmenu = 100;
+		gmenuQuest = id;
+	}
+
+	/**
+	 * ResultGMenu for the field GMenus. 100 (ResultGMenuQuestAccept): a main quest is taken
+	 * whatever the key; a declined one, or one with no slot left (then GMenu 900), closes the
+	 * running phases with result 3; an accepted one shows "퀘스트 수락" while a phase runs.
+	 */
+	private void gmenuResult(int r) {
+		int g = gmenu;
+		gmenu = 0;
+		talk.clear();
+		if (g != 100) {
+			return;
+		}
+		int id = gmenuQuest;
+		if (quests.def(id).kind() != 0 && r == 0) {
+			events.abortAll();
+			return;
+		}
+		if (quests.accept(id) < 0) {
+			events.abortAll();
+			openMessage(900);
+			return;
+		}
+		if (events.depth() > 0) {
+			talk.headlineNow(quests.titled(0xd2db0, id));
+		}
+	}
+
+	/** GMenuFuncUp of a style-0 message from the table at 0xe2684 (900 first). */
+	private void openMessage(int id) {
+		talk.startMessage(so.cbytes(so.u32(OrderScreen.MESSAGE + 4 * (id - 900))), null);
+		gmenu = id;
+	}
+
+	/** One CalcGamePlay tick in the original order; none while a field GMenu runs as the MainFunc instead. */
 	private void gameTick() {
+		if (gmenu != 0) {
+			return;
+		}
 		frames++;
 		lootable = null;
 		drawnFrame();
@@ -580,6 +655,9 @@ final class GameCore {
 			}
 			events.frame();
 			playFrames++;
+			if (playFrames == quests.nextAlert) {
+				quests.checkTime(false);
+			}
 			initHeroState();
 			calcHeroAttack();
 			monsterTick();
@@ -772,6 +850,8 @@ final class GameCore {
 					Math.min(map.width * TILE - 1, px + 48) >> 4, Math.min(map.height * TILE - 1, py + 48) >> 4);
 			m.level = level;
 			m.uid = i;
+			// InitMonsNamed: a named unit (record flag 8) is not counted by kind kill goals.
+			m.named = (r.flags & 8) != 0;
 			int dir = r.direction == 8 ? rng.nextInt(8) : r.direction;
 			if (npc) {
 				m.npc = true;
@@ -1441,8 +1521,12 @@ final class GameCore {
 		}
 	}
 
-	/** InitMonsDown: a corpse (state 9) facing the way it flew, decay 0, then SearchPhaseDead(uid). */
+	/**
+	 * InitMonsDown: CheckQuestMons, a corpse (state 9) facing the way it flew, decay 0, then
+	 * SearchPhaseDead(uid).
+	 */
 	private void initMonsDown(Monster m) {
+		quests.killed(m.variant, m.uid, m.named);
 		changeDir(m, 9, m.dir);
 		m.cnt = 0;
 		events.searchUnit(5, m.uid);
@@ -1708,6 +1792,13 @@ final class GameCore {
 			SlotScreen.Action action = slotScreen.key(code);
 			if (action != null) {
 				onSlotAction(action);
+			}
+			return;
+		}
+		if (gmenu != 0) {
+			int r = talk.gmenuKey(code);
+			if (r >= 0) {
+				gmenuResult(r);
 			}
 			return;
 		}
@@ -2086,7 +2177,8 @@ final class GameCore {
 	 * 2-3 or 3 items by the charge, of one tier weighted by the monster's level. The first slot
 	 * may instead hold a rune (2 percent, one a corpse) or a recipe (20 percent), which end the
 	 * list; the rest are the monster's materials. Equal ids merge and AddItem forces them in.
-	 * Quest drops, the luck stat (hero+0x1ec), pets and elite/boss chances are not ported. A last
+	 * Before the rune, each slot first rolls for a quest item (hero+0x398's drop lists), one a
+	 * call. The luck stat (hero+0x1ec), pets and elite/boss chances are not ported. A last
 	 * cycle of three items with no bag full shows bubble 0xb; then the hero stands again.
 	 */
 	private void gather() {
@@ -2122,8 +2214,16 @@ final class GameCore {
 				int[] counts = new int[n];
 				Arrays.fill(ids, -1);
 				Arrays.fill(counts, 1);
+				boolean quest = false;
 				for (int j = 0; j < n; j++) {
-					if (j == 0) {
+					if (!quest) {
+						int q = quests.drop(c.variant, c.uid, rng);
+						if (q >= 0) {
+							ids[j] = q;
+							quest = true;
+						}
+					}
+					if (j == 0 && ids[0] < 0) {
 						boolean rune = rng.nextInt(1000) < 20;
 						if (runeLeft != 0 && rune) {
 							int x = randWeight10000(lv * 25 + 3500);
@@ -2160,7 +2260,7 @@ final class GameCore {
 					}
 					int d = so.u16(MONS_DROP + c.variant * 2);
 					// Ids with no materials (0xa3, 0xa4) would divide by zero in the original.
-					if (d >> 12 > 0) {
+					if (ids[j] < 0 && d >> 12 > 0) {
 						ids[j] = so.u16(MONS_ITEM + ((d & 0xfff) + randRange(0, (d >> 12) - 1)) * 2) + tier;
 					}
 				}
@@ -2184,6 +2284,7 @@ final class GameCore {
 						bits |= t >= 1 && t <= 0xc ? 1 : t == 0xe || t == 0xf ? 2 : t == 0xd ? 4 : t == 0x13 ? 0x10 : 8;
 					}
 					if (left >= 0) {
+						quests.itemAdded(ids[j], counts[j] - left);
 						String name = items.name(ids[j]);
 						if (t == 0x13) {
 							name = so.cstring(so.u32(EQUIP_GRADE + grade * 4)) + " " + name;
@@ -2413,6 +2514,8 @@ final class GameCore {
 		attackStep = s;
 		if (s >= f[4]) {
 			attackRunning = false;
+			// CheckQuestSkill at the end of a basic attack's animation (id 0).
+			quests.skillUsed(0);
 		}
 		return shown;
 	}
@@ -2499,6 +2602,10 @@ final class GameCore {
 	private void killMonster(Monster m, int toHero) {
 		int levels = hero.gainExp(hero.expFor(m.level, false), rng);
 		log += " 처치." + (levels > 0 ? " 레벨 " + hero.level + " 달성!" : "");
+		// InitHeroLevelUp: with no phase running and none started, AnalysisQuest.
+		if (levels > 0 && events.depth() == 0 && !events.searchPhase()) {
+			quests.analyze();
+		}
 		changeDir(m, 0xf, toHero);
 		m.cnt = 0;
 	}
@@ -2811,7 +2918,7 @@ final class GameCore {
 		// One line of the 16 px font is all that fits under the log; the map keys (3..[) stay unlisted.
 		g.drawString("Enter 대화 1 공격 2 물약 I 가방 F5 저장 F9 불러오기 ESC 종료", MAP_X, OVERLAY_H + 18, 0xffaaa596);
 		boolean combo = comboShown > 1 && !menuOpen && !shopOpen && bossGate == null;
-		if (events.overlay() || bossGate != null || menuOpen || shopOpen || combo || tbar) {
+		if (events.overlay() || bossGate != null || gmenu != 0 || menuOpen || shopOpen || combo || tbar) {
 			// DrawPhase and DrawGMenu work on the original 480x320 screen; fit it like the slot screen.
 			Arrays.fill(overlay.px, 0);
 			Gfx og = new Gfx(overlay);
@@ -2830,7 +2937,7 @@ final class GameCore {
 				if (menuGMenu) {
 					talk.draw(og, 0, true);
 				}
-			} else if (bossGate != null) {
+			} else if (bossGate != null || gmenu != 0) {
 				// A GMenu is not a phase: no fast/slow button.
 				talk.draw(og, 0, true);
 			} else if (events.overlay()) {
@@ -4037,6 +4144,7 @@ final class GameCore {
 					return false;
 				}
 				log = items.name(id) + " " + (count - left) + "개 획득";
+				quests.itemAdded(id, count - left);
 				return true;
 			}
 			int i = inv.add(id, count, (flags & 1) != 0 ? 0 : -1, true, rng);
@@ -4051,6 +4159,7 @@ final class GameCore {
 			} else {
 				log = items.name(id) + " 획득";
 			}
+			quests.itemAdded(id, count);
 			return true;
 		}
 
@@ -4129,6 +4238,105 @@ final class GameCore {
 		public void openShop(int mode, int first, int last) {
 			GameCore.this.openShop(mode, first, last);
 		}
+
+		@Override
+		public void questOffer(int id) {
+			GameCore.this.questOffer(id);
+		}
+
+		@Override
+		public int questFlags(int id) {
+			return quests.flagsOf(id);
+		}
+
+		@Override
+		public void questTurnIn(int id) {
+			quests.turnIn(id);
+		}
+
+		@Override
+		public void questBagFull() {
+			openMessage(0x386);
+		}
+
+		@Override
+		public int questCondition(int op, int x) {
+			return quests.condition(op, x);
+		}
+
+		@Override
+		public void questPhaseEnd() {
+			quests.phaseEnd();
+		}
+	}
+
+	/** What the quest code reads from the game. */
+	private final class QuestLink implements Quests.Host {
+		@Override
+		public int tick() {
+			return playFrames;
+		}
+
+		@Override
+		public int depth() {
+			return events.depth();
+		}
+
+		@Override
+		public int condition(byte[] d, int p) {
+			return events.condition(d, p);
+		}
+
+		@Override
+		public int param(byte[] d, int p) {
+			return events.param(d, p);
+		}
+
+		@Override
+		public String mapCode() {
+			return mapCode;
+		}
+
+		@Override
+		public String monsterName(int kind) {
+			String s = monsterSprites == null ? null : monsterSprites.name(kind);
+			return s == null ? "" : s;
+		}
+
+		@Override
+		public String itemName(int id) {
+			return items.name(id);
+		}
+
+		@Override
+		public int itemType(int id) {
+			return items.type(id);
+		}
+
+		@Override
+		public int[] itemGroup(int id) {
+			return items.group(id);
+		}
+
+		@Override
+		public void headline(byte[] text, boolean wait) {
+			if (wait) {
+				talk.headline(text, 0, text.length);
+			} else {
+				talk.headlineNow(text);
+			}
+		}
+
+		@Override
+		public void sysline(byte[] text) {
+			// One log line stands in for the sysline; its colour codes are dropped.
+			log = Ksc.decode(text, 0, text.length).replaceAll("\u0007.", "").replace('\n', ' ').trim();
+		}
+
+		@Override
+		public boolean searchPhase() {
+			return events.searchPhase();
+		}
 	}
 
 	/** Every unported command a script reached, printed once each. */
@@ -4175,6 +4383,10 @@ final class GameCore {
 				}
 			}
 			p.setProperty("heroInts", ints.toString());
+			// SaveSlot keeps the frame count the quest deadlines run on, the slots and the state bytes.
+			p.setProperty("tick", String.valueOf(playFrames));
+			p.setProperty("questSlots", quests.saveSlots());
+			p.setProperty("questState", quests.saveState());
 			// Units a phase spawned (uid 0x100 + n) live only as long as the scene; map units stay.
 			// A corpse is not kept: the dead are gone when the slot loads.
 			// The aggressive, idle and state columns of older saves stay as placeholders; facing is the direction.
@@ -4240,6 +4452,9 @@ final class GameCore {
 					heroInts[Integer.parseInt(f[0])] = Integer.parseInt(f[1]);
 				}
 			}
+			playFrames = Integer.parseInt(p.getProperty("tick", "0"));
+			quests.loadSlots(p.getProperty("questSlots", ""));
+			quests.loadState(p.getProperty("questState", ""));
 			loadMap(p.getProperty("map", MAP_CODES[0]));
 			heroX = Integer.parseInt(p.getProperty("x", "10"));
 			heroY = Integer.parseInt(p.getProperty("y", "12"));
@@ -4285,8 +4500,9 @@ final class GameCore {
 				}
 			}
 			log = "불러오기 완료.";
-			// LoadSlot loads the map with mode 3: its events reload and SearchPhase runs.
-			enterEvents();
+			// LoadSlot loads the map with mode 3: its events reload and SearchPhase runs, with no AnalysisQuest.
+			events.loadMap(EventScript.map(assets, mapCode));
+			events.searchPhase();
 		} catch (IOException | NumberFormatException e) {
 			log = "불러오기 실패: " + e;
 		}
@@ -4378,6 +4594,8 @@ final class GameCore {
 		/** +0x4e: the record number for map units, 0x100 + n for units a phase spawned. */
 		int uid = -1;
 		boolean npc;
+		/** +6 &amp; 8: a named unit (InitMonsNamed). */
+		boolean named;
 		/** ChangeMonsDir's ani entry (+0x2c), row (+0x27), mirror (+0x28) and direction (+5). */
 		int ani = -1;
 		int row;
@@ -4497,7 +4715,13 @@ final class GameCore {
 		keyUp(Keys.LEFT);
 		System.out.println("walk frames=" + walkTicks + " hero=" + heroX + "," + heroY + " dir=" + heroDir);
 		int moveTicks = 0;
-		while (events.active() && moveTicks < 8000) {
+		String offered = "none";
+		while ((events.active() || gmenu != 0) && moveTicks < 8000) {
+			if (gmenu == 100 && "none".equals(offered)) {
+				// t02's entry event offers main quest 1 (GMenu 100); the next OK takes it.
+				offered = String.valueOf(gmenuQuest);
+				writeFrame(sink, "quest-offer.png");
+			}
 			gameTick();
 			if (++moveTicks % 12 == 0) {
 				key(Keys.ENTER);
@@ -4505,7 +4729,9 @@ final class GameCore {
 		}
 		writeFrame(sink, "mapmove.png");
 		System.out.println("mapmove map=" + mapCode + " hero=" + heroX + "," + heroY + " dir=" + heroDir
-				+ " frames=" + moveTicks + " running=" + events.active());
+				+ " frames=" + moveTicks + " running=" + events.active() + " offered=" + offered + " slot0="
+				+ (quests.slots[0].id1 - 1));
+		String t02Vars = vars(events.vars);
 		// The original refuses to fight in a town (map+0x2d == 1), so the combat drive goes to a02,
 		// the forest north of Ata'mal. Walking a cell at a time does not tick; each swing does.
 		loadMap("a02");
@@ -4807,7 +5033,104 @@ final class GameCore {
 				+ " bare=" + bare);
 		aiTest(sink);
 		lootTest(sink);
+		questTest(sink, t02Vars);
 		new GameCore(assets, storage).writeFrame(sink, "slots-after.png");
+	}
+
+	/**
+	 * Selftest of the quest line in t02, from the variables t01 left and quest 1 taken (the
+	 * mapmove step plays its offer): a kill turns quest 1 in (death event, opcode 31) and offers
+	 * quest 2, whose 100 % quest drop gives 퍽퍽한 고기 from the corpse's 갈무리; that opens ev3's
+	 * trigger, and talking to 로만 (ev4) turns quest 2 in: its state byte becomes 1.
+	 */
+	private void questTest(FrameSink sink, String t02Vars) throws IOException {
+		newEvents();
+		restoreVars(events.vars, t02Vars);
+		quests.reset();
+		loadMap("t02");
+		enterEvents();
+		runPhases(sink, null);
+		if (hero.inv.worn(1) == null) {
+			new Stage().giveItem(297, 1, 2);
+		}
+		quests.accept(1);
+		quests.analyze();
+		String offer1 = quests.slots[0].id1 - 1 + "/" + Integer.toHexString(quests.slots[0].flags);
+		Monster foe = nearestMonster();
+		monsters.removeIf(m -> m != foe && !m.npc);
+		heroX = foe.x;
+		heroY = foe.y - 1;
+		heroPx = 0;
+		foe.offX = 0;
+		foe.offY = 0;
+		foe.hp = 1;
+		foe.dodge = -1000;
+		strike(foe);
+		runPhases(sink, null);
+		String after1 = "state1=" + quests.state[1] + " slot0=" + (quests.slots[0].id1 - 1);
+		heroX = foe.x;
+		heroY = foe.y - 1;
+		for (int i = 0; i < 4; i++) {
+			gameTick();
+		}
+		int meatBefore = hero.inv.count(136, -1);
+		key(Keys.K1);
+		for (int t = 0; t < 200 && heroAct == 2; t++) {
+			gameTick();
+		}
+		keyUp(Keys.K1);
+		int meat = hero.inv.count(136, -1);
+		boolean ev3 = events.active();
+		runPhases(sink, null);
+		Monster roman = null;
+		for (Monster m : monsters) {
+			if (m.npc && m.variant == 202) {
+				roman = m;
+			}
+		}
+		heroX = roman.x - 1;
+		heroY = roman.y;
+		heroPx = 0;
+		heroDir = 3;
+		key(Keys.ENTER);
+		runPhases(sink, "quest-done.png");
+		// Sub slots 1-4 full: offering sub quest 13 shows 예 / 아니오, and 예 finds no slot (GMenu 900).
+		for (int id : new int[] { 8, 9, 10, 12 }) {
+			quests.accept(id);
+		}
+		// SaveSlot / LoadSlot keep the slots (kill counts, deadlines) and the state bytes.
+		String kept = quests.saveSlots() + "|" + quests.saveState();
+		save();
+		load();
+		boolean roundtrip = kept.equals(quests.saveSlots() + "|" + quests.saveState());
+		questOffer(13);
+		writeFrame(sink, "quest-sub.png");
+		key(Keys.ENTER);
+		boolean full = gmenu == 900;
+		writeFrame(sink, "quest-full.png");
+		key(Keys.ENTER);
+		System.out.println("quest slot0=" + offer1 + " " + after1 + " meat=" + meatBefore + "->" + meat + " ev3=" + ev3
+				+ " state2=" + quests.state[2] + " slot0=" + (quests.slots[0].id1 - 1) + " full=" + full + "/" + gmenu
+				+ " roundtrip=" + roundtrip
+				+ " log=" + log);
+	}
+
+	/** Selftest: plays running phases and field GMenus out, OK every 12 frames; true if a GMenu came up. */
+	private boolean runPhases(FrameSink sink, String shot) throws IOException {
+		boolean menu = false;
+		for (int t = 1; t < 4000 && (events.active() || gmenu != 0); t++) {
+			if (gmenu != 0 && !menu) {
+				menu = true;
+				if (shot != null) {
+					writeFrame(sink, shot);
+				}
+			}
+			gameTick();
+			if (t % 12 == 0) {
+				key(Keys.ENTER);
+			}
+		}
+		return menu;
 	}
 
 	/** Selftest combat: face an adjacent monster, press attack and play the swing (and any fling) out. */
