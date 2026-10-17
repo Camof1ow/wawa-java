@@ -327,6 +327,10 @@ final class GameCore {
 	private int heroGoDir;
 	/** AddImoticon entries: target (null = hero), kind, frames drawn. */
 	private final List<Emote> emotes = new ArrayList<>();
+	/** InitUnit's draw list (wawamain+0x4e68): monsters and HERO_UNIT, in SortUnit's y order. */
+	private final List<Object> unitOrder = new ArrayList<>();
+	/** The hero's entry in unitOrder (the Hero object is replaced on a new game or a load). */
+	private static final Object HERO_UNIT = new Object();
 	private int frames;
 	/** The CalcGamePlay timer's delay, wawamain+0x20 (g_anSpeed[5] = 62 ms, Slowest 83 ms). */
 	private int delay = 62;
@@ -593,6 +597,8 @@ final class GameCore {
 		runWalking = false;
 		clickX = -1;
 		emotes.clear();
+		// LoadGameMap is followed by InitUnit: the draw list starts over from the new map's units.
+		unitOrder.clear();
 		log = area.name + " (" + map.width + "x" + map.height + ") 진입.";
 	}
 
@@ -3228,51 +3234,14 @@ final class GameCore {
 		if (dim != 0) {
 			g.fillRect(MAP_X, MAP_Y, VIEW_W * CELL, VIEW_H * CELL, alpha8(dim) << 24);
 		}
-		for (Monster m : monsters) {
-			// DrawUnit draws a unit only while +0x42 is below 4.
-			if (m.fade >= 4) {
-				continue;
-			}
-			int cx = ox + m.x * CELL + CELL / 2 + (unitOffX(m) + m.offX) * CELL / TILE;
-			// DrawMonsAnim draws a lifted monster (+0x36) higher.
-			int cy = oy + m.y * CELL + CELL / 2 + (unitOffY(m) + m.offY - m.lift) * CELL / TILE;
-			// InitMonsOne puts the monster's position at the cell centre and DrawMonsAnim draws every
-			// part relative to it, so the pose's anchor goes there; the view scale carries over.
-			PartSprites.Pose pose = monsterSprites == null ? null
-					: m.ani >= 0 ? monsterSprites.pose(m.variant, m.ani, unitStep(m), m.mirror)
-					: monsterSprites.standing(m.variant);
-			if (pose != null) {
-				drawPose(g, pose, cx, cy, m.fade);
-			} else {
-				g.fillRect(cx - CELL / 2 + 4, cy - CELL / 2 + 4, CELL - 8, CELL - 8, m.color());
-			}
-			// DrawMonsAnim's emote (+0x2e): the bubble, then sweat, "?" (standing, walking, homing) or "!".
-			if (m.emote != 0 && !m.npc) {
-				int ey = cy - unitHeight(m) * CELL / TILE;
-				clip(g, 0x30, cx, ey);
-				clip(g, m.emote < 0 ? 0x33 : m.aniState == 1 || m.aniState == 3 || m.aniState == 0xb ? 0x32 : 0x31, cx, ey);
-			}
-			// DrawMonsAnim's quest mark (+0x39) over the head while no phase runs, bobbing by
-			// {0, 1, 4, 3, 2, 1, 0}[frames % 7] (0xdd4d8).
-			if (m.questMark != 0 && !events.active()) {
-				int bob = so.u8(0xdd4d8 + frames % 7);
-				clip(g, 0x2c + m.questMark, cx, cy - (unitHeight(m) + bob) * CELL / TILE);
-			}
-		}
 		int hx = ox + heroX * CELL + CELL / 2 + heroOffX() * CELL / TILE;
 		int hy = oy + heroY * CELL + CELL / 2 + heroOffY() * CELL / TILE;
-		if (heroFade < 4) {
-			// DrawHeroAnim: the hero's position is the cell centre, as for monsters.
-			try {
-				PartSprites.Pose pose = heroAnim.pose(heroLook(), heroStep);
-				if (pose != null) {
-					drawPose(g, pose, hx, hy, heroFade);
-				}
-			} catch (IOException e) {
-				log = "영웅 그림 실패: " + e;
-			}
-			if (!events.active()) {
-				bar(g, hx - CELL / 2, hy + CELL / 2 - 5, (float) hero.hp / hero.maxHp, 0xff50dc78);
+		sortUnits();
+		for (Object u : unitOrder) {
+			if (u == HERO_UNIT) {
+				drawHero(g, hx, hy);
+			} else {
+				drawMonster(g, (Monster) u, ox, oy);
 			}
 		}
 		for (Emote e : emotes) {
@@ -3301,6 +3270,97 @@ final class GameCore {
 			g.fillRect(MAP_X, MAP_Y, VIEW_W * CELL, VIEW_H * CELL, fadeWhite ? a | 0xffffff : a);
 		}
 		g.setClip(clip);
+	}
+
+	/**
+	 * InitUnit and SortUnit: the draw list is the map's units and then the hero, with units that
+	 * appear later appended and freed ones dropped; every frame it is insertion-sorted by the
+	 * unit's y pixel (+2), so a unit lower on the map draws over one above it and units on the
+	 * same line keep the last frame's order.
+	 */
+	private void sortUnits() {
+		if (unitOrder.isEmpty()) {
+			unitOrder.addAll(monsters);
+			unitOrder.add(HERO_UNIT);
+		} else {
+			unitOrder.removeIf(u -> u != HERO_UNIT && !monsters.contains(u));
+			for (Monster m : monsters) {
+				if (!unitOrder.contains(m)) {
+					unitOrder.add(m);
+				}
+			}
+		}
+		for (int i = 1; i < unitOrder.size(); i++) {
+			Object u = unitOrder.get(i);
+			int y = unitY(u);
+			int j = i;
+			while (j > 0 && y < unitY(unitOrder.get(j - 1))) {
+				unitOrder.set(j, unitOrder.get(j - 1));
+				j--;
+			}
+			unitOrder.set(j, u);
+		}
+	}
+
+	/** A unit's y pixel (+2): the hero's or the monster's cell centre plus its offsets, without lift. */
+	private int unitY(Object u) {
+		if (u == HERO_UNIT) {
+			return heroWorldY();
+		}
+		Monster m = (Monster) u;
+		return m.y * TILE + TILE / 2 + unitOffY(m) + m.offY;
+	}
+
+	/** DrawUnit for a monster: DrawMonsAnim with its emote and quest mark. */
+	private void drawMonster(Gfx g, Monster m, int ox, int oy) {
+		// DrawUnit draws a unit only while +0x42 is below 4.
+		if (m.fade >= 4) {
+			return;
+		}
+		int cx = ox + m.x * CELL + CELL / 2 + (unitOffX(m) + m.offX) * CELL / TILE;
+		// DrawMonsAnim draws a lifted monster (+0x36) higher.
+		int cy = oy + m.y * CELL + CELL / 2 + (unitOffY(m) + m.offY - m.lift) * CELL / TILE;
+		// InitMonsOne puts the monster's position at the cell centre and DrawMonsAnim draws every
+		// part relative to it, so the pose's anchor goes there; the view scale carries over.
+		PartSprites.Pose pose = monsterSprites == null ? null
+				: m.ani >= 0 ? monsterSprites.pose(m.variant, m.ani, unitStep(m), m.mirror)
+				: monsterSprites.standing(m.variant);
+		if (pose != null) {
+			drawPose(g, pose, cx, cy, m.fade);
+		} else {
+			g.fillRect(cx - CELL / 2 + 4, cy - CELL / 2 + 4, CELL - 8, CELL - 8, m.color());
+		}
+		// DrawMonsAnim's emote (+0x2e): the bubble, then sweat, "?" (standing, walking, homing) or "!".
+		if (m.emote != 0 && !m.npc) {
+			int ey = cy - unitHeight(m) * CELL / TILE;
+			clip(g, 0x30, cx, ey);
+			clip(g, m.emote < 0 ? 0x33 : m.aniState == 1 || m.aniState == 3 || m.aniState == 0xb ? 0x32 : 0x31, cx, ey);
+		}
+		// DrawMonsAnim's quest mark (+0x39) over the head while no phase runs, bobbing by
+		// {0, 1, 4, 3, 2, 1, 0}[frames % 7] (0xdd4d8).
+		if (m.questMark != 0 && !events.active()) {
+			int bob = so.u8(0xdd4d8 + frames % 7);
+			clip(g, 0x2c + m.questMark, cx, cy - (unitHeight(m) + bob) * CELL / TILE);
+		}
+	}
+
+	/** DrawUnit for the hero: DrawHeroAnim and this port's HP bar under the feet. */
+	private void drawHero(Gfx g, int hx, int hy) {
+		if (heroFade >= 4) {
+			return;
+		}
+		// DrawHeroAnim: the hero's position is the cell centre, as for monsters.
+		try {
+			PartSprites.Pose pose = heroAnim.pose(heroLook(), heroStep);
+			if (pose != null) {
+				drawPose(g, pose, hx, hy, heroFade);
+			}
+		} catch (IOException e) {
+			log = "영웅 그림 실패: " + e;
+		}
+		if (!events.active()) {
+			bar(g, hx - CELL / 2, hy + CELL / 2 - 5, (float) hero.hp / hero.maxHp, 0xff50dc78);
+		}
 	}
 
 	/**
@@ -5234,7 +5294,37 @@ final class GameCore {
 		aiTest(sink);
 		lootTest(sink);
 		questTest(sink, t02Vars);
+		zorderTest(sink);
 		new GameCore(assets, storage).writeFrame(sink, "slots-after.png");
+	}
+
+	/**
+	 * Selftest of SortUnit on a01: an NPC one cell below the hero draws after (over) the hero,
+	 * one cell above draws before; stepping onto the NPC's line keeps the last frame's order.
+	 */
+	private void zorderTest(FrameSink sink) throws IOException {
+		Monster npc = null;
+		for (Monster m : monsters) {
+			if (m.npc && npc == null) {
+				npc = m;
+			}
+		}
+		heroPx = 0;
+		heroX = npc.x;
+		heroY = npc.y - 1;
+		sortUnits();
+		boolean below = unitOrder.indexOf(npc) > unitOrder.indexOf(HERO_UNIT);
+		writeFrame(sink, "zorder.png");
+		heroY = npc.y;
+		sortUnits();
+		boolean tieAfter = unitOrder.indexOf(npc) > unitOrder.indexOf(HERO_UNIT);
+		heroY = npc.y + 1;
+		sortUnits();
+		boolean above = unitOrder.indexOf(npc) < unitOrder.indexOf(HERO_UNIT);
+		heroY = npc.y;
+		sortUnits();
+		boolean tieBefore = unitOrder.indexOf(npc) < unitOrder.indexOf(HERO_UNIT);
+		System.out.println("zorder below=" + below + " above=" + above + " tie=" + (tieAfter && tieBefore));
 	}
 
 	/**
