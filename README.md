@@ -22,7 +22,10 @@ logic is re-derived from the native code, and every format is decoded from the s
 - **Hero**: drawn from `dat/20.dat` with its equipment layers (`ani_hero` / `con_hero` /
   `lnk_hero`, palette rows from `pal/<n>.png`) on the slot screen, the new-game preview (each
   class's outfit) and the field.
-- **World map, grid movement, turn-based combat, save/load**: playable Swing slice.
+- **World map, grid movement, real-time melee, save/load**: the attack key swings the original's
+  combo (acts 9, 0xa, 0xf) on its weapon timing tables, hitting every monster whose hurtbox meets
+  the swing; struck monsters flinch and are pushed, dead ones fly off and lie as corpses
+  (`Fight`, `GameCore`), with the original's damage numbers and combo counter.
 - **Terrain**: each map's collision grid is built as LoadGameBlock builds it, from the tile sets'
   `g_anTileBlock` tables in `libwawa.so` (`BlockGrid`). Deep water, cliffs, cave walls and lava
   stop the hero; shallow water and bridges do not. Walking into a blocking tile steps aside to
@@ -50,8 +53,9 @@ logic is re-derived from the native code, and every format is decoded from the s
   and the quest board (GOrder 8); a script that reaches one logs `[미포팅]` and carries on.
   Boss/regen map exits do open their warning (GMenu 0x74) and enter on its Enter button.
 - **Animation playback.** Poses for any state and step are composed (`MonsterAnim.pose`,
-  `HeroAnim.pose`); monsters only draw state 0, step 0, and the hero only its stand, walk and sit
-  actions (attacks, skills and riding are not ported).
+  `HeroAnim.pose`). Monsters animate their flinch, death and corpse states, but their AI (idle,
+  wander, alert, chase and attack states) is still the port's cell-stepping one; the hero draws
+  its stand, walk, sit and melee acts (skills and riding are not ported).
 - **Palette variants** (`LoadSpritePal`), `.mbk` object/portal tables.
 
 ## Requirements
@@ -82,8 +86,8 @@ java -cp out wawa.ExtractAll <path-to-assets> <output-dir>
 `wawa.Game` supports `--selftest` to drive scripted input through the opening, the slot screen, a
 new game with t01's opening scene and a few fights, writing `out/logo.png`, `out/title*.png`,
 `out/slots.png`, `out/newgame.png`, `out/intro*.png`, `out/selftest.png`, `out/menu-item.png`,
-`out/menu-popup.png`, `out/shop-*.png` and `out/slots-after.png`, so the render can be checked
-without a GUI.
+`out/menu-popup.png`, `out/shop-*.png`, `out/melee.png`, `out/corpse.png` and `out/slots-after.png`,
+so the render can be checked without a GUI.
 
 ## Play in the browser
 
@@ -120,7 +124,7 @@ npx http-server web    # or any static server; the page asks for your wild.apk o
 | `src/main/java/wawa/{MonsterTable,MonsterData,MonsterStats,MonsterSprite,MonsterAnim}.java` | monsters |
 | `src/main/java/wawa/{PartSprites,HeroAnim}.java` | dat part composition shared by monsters and the hero; hero outfit layers |
 | `src/main/java/wawa/{EventScript,EventRunner,TalkBox}.java` | event tables and length rules, the phase interpreter, the dialogue box |
-| `src/main/java/wawa/{Hero,Item,Inventory,Combat}.java` | hero record, item tables, the hero's items, hit resolution |
+| `src/main/java/wawa/{Hero,Item,Inventory,Combat,Fight}.java` | hero record, item tables, the hero's items, hit resolution, melee tables and hit geometry |
 | `src/main/java/wawa/{Gsac,RenderAtlas,ElfImage,ResourceFile}.java` | asset decoding |
 | `src/main/java/wawa/{CheckMaps,CheckMapsRun,ExtractAll,MatchSprite,FindBySize}.java` | tools |
 | `web/index.html`, `web/src/wawa/WebMain.java`, `build.gradle.kts`, `.github/workflows/pages.yml` | browser page, its TeaVM entry point, the TeaVM build and the Pages workflow |

@@ -66,6 +66,15 @@ public final class AreaInfo {
 		return new AreaInfo("(no area data) " + code, 0, 1, 0, 0, 0, false, new int[3], List.of());
 	}
 
+	/**
+	 * LoadGameMap's map+0x2d from the ambience byte's high nibble: 1 gives 2, 2 gives 4, anything
+	 * else 1, a town, where InitHeroWeaponSpeed refuses to start an attack.
+	 */
+	public int mapKind() {
+		int n = ambience >> 4;
+		return n == 1 ? 2 : n == 2 ? 4 : 1;
+	}
+
 	/** A 0xf0 nibble on the weather byte is the "P" branch with RandRange(0,1) inside it. */
 	public boolean rainy() {
 		if (scriptedWeather) {
